@@ -1,12 +1,14 @@
 package utils
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/jfrog/jfrog-cli-core/v2/utils/log"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -29,27 +31,19 @@ func testCreateDefaultPropertiesFile(projectType ProjectType, t *testing.T) {
 	providedConfig := viper.New()
 	providedConfig.Set("type", projectType.String())
 
-	propsFile, err := CreateBuildInfoPropertiesFile("", "", "", "", providedConfig, projectType)
+	props, err := CreateBuildInfoProps("", providedConfig, projectType)
 	if err != nil {
 		t.Error(err)
 	}
-	defer os.Remove(propsFile)
-
-	actualConfig, err := ReadConfigFile(propsFile, PROPERTIES)
-	if err != nil {
-		t.Error(err)
-	}
-
-	expectedConfig := viper.New()
+	expectedProps := make(map[string]string)
 	for _, partialMapping := range buildTypeConfigMapping[projectType] {
 		for propertyKey := range *partialMapping {
 			if defaultPropertiesValues[propertyKey] != "" {
-				expectedConfig.Set(propertyKey, defaultPropertiesValues[propertyKey])
+				expectedProps[propertyKey] = defaultPropertiesValues[propertyKey]
 			}
 		}
 	}
-
-	compareViperConfigs(t, actualConfig, expectedConfig, projectType)
+	assert.True(t, fmt.Sprint(props) == fmt.Sprint(expectedProps))
 }
 
 func TestCreateSimplePropertiesFileWithProxy(t *testing.T) {
@@ -91,31 +85,20 @@ func createSimplePropertiesFile(t *testing.T, propertiesFileConfig map[string]st
 	for k, v := range yamlConfig {
 		vConfig.Set(k, v)
 	}
-	propsFilePath, err := CreateBuildInfoPropertiesFile("", "", "", "", vConfig, Maven)
+	props, err := CreateBuildInfoProps("", vConfig, Maven)
 	if err != nil {
 		t.Error(err)
 	}
-	defer os.Remove(propsFilePath)
-
-	actualConfig, err := ReadConfigFile(propsFilePath, PROPERTIES)
-	if err != nil {
-		t.Error(err)
-	}
-
-	expectedConfig := viper.New()
+	expectedProps := make(map[string]string)
 	for _, partialMapping := range buildTypeConfigMapping[Maven] {
 		for propertyKey := range *partialMapping {
 			if defaultPropertiesValues[propertyKey] != "" {
-				expectedConfig.Set(propertyKey, defaultPropertiesValues[propertyKey])
+				expectedProps[propertyKey] = defaultPropertiesValues[propertyKey]
 			}
 		}
 	}
 
-	for k, v := range propertiesFileConfig {
-		expectedConfig.Set(k, v)
-	}
-
-	compareViperConfigs(t, actualConfig, expectedConfig, Maven)
+	assert.True(t, fmt.Sprint(props) == fmt.Sprint(expectedProps))
 }
 
 func TestGeneratedBuildInfoFile(t *testing.T) {
@@ -129,25 +112,20 @@ func TestGeneratedBuildInfoFile(t *testing.T) {
 	for k, v := range yamlConfig {
 		vConfig.Set(k, v)
 	}
-	propsFilePath, err := CreateBuildInfoPropertiesFile("buildName", "buildNumber", "projectKey", "", vConfig, Maven)
-	if err != nil {
-		t.Error(err)
-	}
-	defer os.Remove(propsFilePath)
-
-	actualConfig, err := ReadConfigFile(propsFilePath, PROPERTIES)
+	props, err := CreateBuildInfoProps("", vConfig, Maven)
 	if err != nil {
 		t.Error(err)
 	}
 
 	generatedBuildInfoKey := "buildInfo.generated.build.info"
-	if !actualConfig.IsSet(generatedBuildInfoKey) {
+	if v, ok := props[generatedBuildInfoKey]; !ok {
 		t.Error(generatedBuildInfoKey, "key does not exists")
+		if !fileutils.IsPathExists(v, false) {
+			t.Error("Path: ", v, "does not exists")
+		}
+		assert.NoError(t, os.Remove(v))
 	}
-	if !fileutils.IsPathExists(actualConfig.GetString(generatedBuildInfoKey), false) {
-		t.Error("Path: ", actualConfig.GetString(generatedBuildInfoKey), "does not exists")
-	}
-	defer os.Remove(actualConfig.GetString(generatedBuildInfoKey))
+
 }
 
 func compareViperConfigs(t *testing.T, actual, expected *viper.Viper, projectType ProjectType) {
