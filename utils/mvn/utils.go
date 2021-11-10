@@ -2,7 +2,6 @@ package mvnutils
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -93,47 +92,4 @@ func setDeployFalse(vConfig *viper.Viper) {
 	if vConfig.GetString(utils.DeployerPrefix+utils.SnapshotRepo) == "" {
 		vConfig.Set(utils.DeployerPrefix+utils.SnapshotRepo, "empty_repo")
 	}
-}
-
-func (config *mvnRunConfig) GetCmd() *exec.Cmd {
-	var cmd []string
-	cmd = append(cmd, config.java)
-	cmd = append(cmd, "-classpath", config.plexusClassworlds)
-	cmd = append(cmd, "-Dmaven.home="+config.mavenHome)
-	cmd = append(cmd, "-DbuildInfoConfig.propertiesFile="+config.buildInfoProperties)
-	if config.artifactoryResolutionEnabled {
-		cmd = append(cmd, "-DbuildInfoConfig.artifactoryResolutionEnabled=true")
-	}
-	cmd = append(cmd, "-Dm3plugin.lib="+config.pluginDependencies)
-	cmd = append(cmd, "-Dclassworlds.conf="+config.cleassworldsConfig)
-	cmd = append(cmd, "-Dmaven.multiModuleProjectDirectory="+config.workspace)
-	if config.mavenOpts != "" {
-		cmd = append(cmd, strings.Split(config.mavenOpts, " ")...)
-	}
-	cmd = append(cmd, "org.codehaus.plexus.classworlds.launcher.Launcher")
-	cmd = append(cmd, config.goals...)
-	return exec.Command(cmd[0], cmd[1:]...)
-}
-
-type mvnRunConfig struct {
-	java                         string
-	plexusClassworlds            string
-	cleassworldsConfig           string
-	mavenHome                    string
-	pluginDependencies           string
-	workspace                    string
-	pom                          string
-	goals                        []string
-	buildInfoProperties          string
-	artifactoryResolutionEnabled bool
-	generatedBuildInfoPath       string
-	mavenOpts                    string
-	deployableArtifactsFilePath  string
-}
-
-func (config *mvnRunConfig) runCmd() error {
-	command := config.GetCmd()
-	command.Stderr = os.Stderr
-	command.Stdout = os.Stderr
-	return coreutils.ConvertExitCodeError(errorutils.CheckError(command.Run()))
 }

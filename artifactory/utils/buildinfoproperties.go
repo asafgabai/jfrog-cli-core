@@ -177,7 +177,6 @@ func GetServerDetails(vConfig *viper.Viper) (*config.ServerDetails, error) {
 }
 
 func CreateBuildInfoProps(deployableArtifactsFile string, config *viper.Viper, projectType ProjectType) (map[string]string, error) {
-	props := make(map[string]string)
 	if config.GetString("type") != projectType.String() {
 		return nil, errorutils.CheckError(errors.New("Incompatible build config, expected: " + projectType.String() + " got: " + config.GetString("type")))
 	}
@@ -193,31 +192,33 @@ func CreateBuildInfoProps(deployableArtifactsFile string, config *viper.Viper, p
 	if deployableArtifactsFile != "" {
 		config.Set(DeployableArtifacts, deployableArtifactsFile)
 	}
+	return createProps(config, projectType), nil
+}
 
+func createProps(config *viper.Viper, projectType ProjectType) map[string]string {
+	props := make(map[string]string)
 	// Iterate over all the required properties keys according to the buildType and create properties file.
 	// If a value is provided by the build config file write it,
 	// otherwise use the default value from defaultPropertiesValues map.
 	for _, partialMapping := range buildTypeConfigMapping[projectType] {
 		for propKey, configKey := range *partialMapping {
+			var value string
 			if config.IsSet(configKey) {
-				props[propKey] = config.GetString(configKey)
-				addIncubatingProps(props, propKey, config.GetString(configKey))
+				value = config.GetString(configKey)
 			} else if defaultVal, ok := defaultPropertiesValues[propKey]; ok {
-				props[propKey] = defaultVal
-				addIncubatingProps(props, propKey, defaultVal)
-
+				value = defaultVal
+			}
+			if value != "" {
+				props[propKey] = value
+				// Properties that have the 'artifactory.' prefix are deprecated.
+				// For backward compatibility reasons, both will be added to the props map.
+				if strings.HasPrefix(propKey, "artifactory.") {
+					props[strings.TrimPrefix(propKey, "artifactory.")] = value
+				}
 			}
 		}
 	}
-	return props, nil
-}
-
-// Properties that have the 'artifactory.' prefix are deprecated.
-// For backward compatibility reasons, both will be added to the props map.
-func addIncubatingProps(props map[string]string, propKey, value string) {
-	if strings.HasPrefix(propKey, "artifactory.") {
-		props[strings.TrimPrefix(propKey, "artifactory.")] = value
-	}
+	return props
 }
 
 // If the HTTP_PROXY environment variable is set, add to the config proxy details.
