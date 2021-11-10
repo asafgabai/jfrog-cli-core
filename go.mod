@@ -34,6 +34,6 @@ replace github.com/jfrog/jfrog-client-go => github.com/asafgabai/jfrog-client-go
 
 replace github.com/jfrog/gocmd => github.com/asafgabai/gocmd v0.1.20-0.20211109145116-4d1a4b4ae25e
 
-replace github.com/jfrog/build-info-go => github.com/jfrog/build-info-go v0.0.0-20211109131214-8204208ea47e
+replace github.com/jfrog/build-info-go => github.com/jfrog/build-info-go v0.0.0-20211110155042-34fd958ef024
 
 //replace github.com/jfrog/gofrog => ../gofrog
