@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	HttpProxy = "HTTP_PROXY"
+	HttpProxyEnvKey  = "HTTP_PROXY"
+	HttpsProxyEnvKey = "HTTPS_PROXY"
+	NoProxyEnvKey    = "NO_PROXY"
 )
 
 type BuildConfigMapping map[ProjectType][]*map[string]string
@@ -65,13 +67,13 @@ const ExcludePatterns = "excludePatterns"
 const FilterExcludedArtifactsFromBuild = "filterExcludedArtifactsFromBuild"
 
 // For path and temp files
-const PropertiesTempPrefix = "buildInfoProperties"
 const PropertiesTempPath = "jfrog/properties/"
-const GeneratedBuildInfoTempPrefix = "generatedBuildInfo"
 
-const Proxy = "proxy."
+const httpProxy = "proxy."
+const NoProxy = "noProxy"
 const Host = "host"
 const Port = "port"
+const httpsProxy = httpProxy + "https."
 
 // Config mapping are used to create buildInfo properties file to be used by BuildInfo extractors.
 // Build config provided by the user may contain other properties that will not be included in the properties file.
@@ -109,8 +111,14 @@ var commonConfigMapping = map[string]string{
 	"deploy.build.timestamp":                 BuildTimestamp,
 	"buildInfo.generated.build.info":         GeneratedBuildInfo,
 	"buildInfo.deployable.artifacts.map":     DeployableArtifacts,
-	"proxy.host":                             Proxy + Host,
-	"proxy.port":                             Proxy + Port,
+	"proxy.host":                             httpProxy + Host,
+	"proxy.port":                             httpProxy + Port,
+	"proxy.username":                         httpProxy + Username,
+	"proxy.password":                         httpProxy + Password,
+	"proxy.noProxy":                          httpProxy + NoProxy,
+	"proxy.https.host":                       httpsProxy + Host,
+	"proxy.https.port":                       httpsProxy + Port,
+	"proxy.https.username":                   httpsProxy + Username,
 	"publish.forkCount":                      ForkCount,
 	"insecureTls":                            InsecureTls,
 }
@@ -155,6 +163,25 @@ func ReadConfigFile(configPath string, configType ConfigType) (config *viper.Vip
 	return config, errorutils.CheckError(err)
 }
 
+func ReadMavenConfig(path string, mvnProps map[string]any) (config *viper.Viper, err error) {
+	if path == "" {
+		config = createDefaultConfigWithParams(YAML, Maven.String(), mvnProps)
+	} else {
+		config, err = ReadConfigFile(path, YAML)
+	}
+	return
+}
+
+func createDefaultConfigWithParams(configType ConfigType, technology string, params map[string]any) *viper.Viper {
+	vConfig := viper.New()
+	vConfig.SetConfigType(string(configType))
+	vConfig.Set("type", technology)
+	for key, value := range params {
+		vConfig.Set(key, value)
+	}
+	return vConfig
+}
+
 // Returns the Artifactory details
 // Checks first for the deployer information if exists and if not, checks for the resolver information.
 func GetServerDetails(vConfig *viper.Viper) (*config.ServerDetails, error) {
@@ -170,7 +197,7 @@ func GetServerDetails(vConfig *viper.Viper) (*config.ServerDetails, error) {
 	return nil, nil
 }
 
-func CreateBuildInfoProps(deployableArtifactsFile string, config *viper.Viper, projectType ProjectType) (map[string]string, error) {
+func CreateBuildInfoProps(buildArtifactsDetailsFile string, config *viper.Viper, projectType ProjectType) (map[string]string, error) {
 	if config.GetString("type") != projectType.String() {
 		return nil, errorutils.CheckErrorf("Incompatible build config, expected: " + projectType.String() + " got: " + config.GetString("type"))
 	}
@@ -183,8 +210,8 @@ func CreateBuildInfoProps(deployableArtifactsFile string, config *viper.Viper, p
 	if err := setProxyIfDefined(config); err != nil {
 		return nil, err
 	}
-	if deployableArtifactsFile != "" {
-		config.Set(DeployableArtifacts, deployableArtifactsFile)
+	if buildArtifactsDetailsFile != "" {
+		config.Set(DeployableArtifacts, buildArtifactsDetailsFile)
 	}
 	return createProps(config, projectType), nil
 }
@@ -215,23 +242,66 @@ func createProps(config *viper.Viper, projectType ProjectType) map[string]string
 	return props
 }
 
-// If the HTTP_PROXY environment variable is set, add to the config proxy details.
+// If one of the HTTP_PROXY, HTTPS_PROXY or No_PROXY environment variables are set, add to the config proxy details.
 func setProxyIfDefined(config *viper.Viper) error {
-	// Add HTTP_PROXY if exists
-	proxy := os.Getenv(HttpProxy)
-	if proxy != "" {
-		url, err := url.Parse(proxy)
-		if err != nil {
-			return errorutils.CheckError(err)
-		}
-		host, port, err := net.SplitHostPort(url.Host)
-		if err != nil {
-			return errorutils.CheckError(err)
-		}
-		config.Set(Proxy+Host, host)
-		config.Set(Proxy+Port, port)
+	setNoProxyIfDefined(config)
+	if err := setHttpProxy(config); err != nil {
+		return err
 	}
-	return nil
+	return setHttpsProxy(config)
+}
+
+func setHttpProxy(config *viper.Viper) error {
+	var proxyConfig string
+	if proxyConfig = os.Getenv(HttpProxyEnvKey); proxyConfig == "" {
+		return nil
+	}
+	host, port, username, password, err := parseProxy(proxyConfig)
+	if err != nil {
+		return err
+	}
+	config.Set(httpProxy+Host, host)
+	config.Set(httpProxy+Port, port)
+	config.Set(httpProxy+Username, username)
+	return os.Setenv(httpProxy+Password, password)
+}
+
+func setHttpsProxy(config *viper.Viper) error {
+	var proxyConfig string
+	if proxyConfig = os.Getenv(HttpsProxyEnvKey); proxyConfig == "" {
+		return nil
+	}
+	host, port, username, password, err := parseProxy(proxyConfig)
+	if err != nil {
+		return err
+	}
+	config.Set(httpsProxy+Host, host)
+	config.Set(httpsProxy+Port, port)
+	config.Set(httpsProxy+Username, username)
+	return os.Setenv(httpsProxy+Password, password)
+}
+
+func setNoProxyIfDefined(config *viper.Viper) {
+	noProxy := os.Getenv(NoProxyEnvKey)
+	if noProxy != "" {
+		config.Set(httpProxy+NoProxy, noProxy)
+	}
+}
+
+func parseProxy(proxy string) (host string, port string, username string, password string, err error) {
+	url, err := url.Parse(proxy)
+	if err != nil {
+		err = errorutils.CheckError(err)
+		return
+	}
+	host, port, err = net.SplitHostPort(url.Host)
+	if err != nil {
+		err = errorutils.CheckError(err)
+		return
+	}
+	password, _ = url.User.Password()
+	username = url.User.Username()
+	return
 }
 
 func setServerDetailsToConfig(contextPrefix string, vConfig *viper.Viper) error {
@@ -249,19 +319,15 @@ func setServerDetailsToConfig(contextPrefix string, vConfig *viper.Viper) error 
 	}
 	vConfig.Set(contextPrefix+Url, artDetails.GetArtifactoryUrl())
 
+	username := artDetails.GetUser()
+	password := artDetails.GetPassword()
 	if artDetails.GetAccessToken() != "" {
-		username, err := auth.ExtractUsernameFromAccessToken(artDetails.GetAccessToken())
-		if err != nil {
-			return err
+		if username == "" {
+			username = auth.ExtractUsernameFromAccessToken(artDetails.GetAccessToken())
 		}
-		vConfig.Set(contextPrefix+Username, username)
-		vConfig.Set(contextPrefix+Password, artDetails.GetAccessToken())
-		return nil
+		password = artDetails.GetAccessToken()
 	}
-
-	if artDetails.GetUser() != "" && artDetails.GetPassword() != "" {
-		vConfig.Set(contextPrefix+Username, artDetails.GetUser())
-		vConfig.Set(contextPrefix+Password, artDetails.GetPassword())
-	}
+	vConfig.Set(contextPrefix+Username, username)
+	vConfig.Set(contextPrefix+Password, password)
 	return nil
 }

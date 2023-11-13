@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/jfrog/jfrog-client-go/utils/log"
-	"github.com/magiconair/properties/assert"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/jfrog/jfrog-client-go/utils/log"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSpecVarsStringToMap(t *testing.T) {
@@ -33,8 +38,10 @@ func TestSpecVarsStringToMap(t *testing.T) {
 
 func assertSpecVars(expected, actual map[string]string, t *testing.T) {
 	if !reflect.DeepEqual(expected, actual) {
-		expectedMap, _ := json.Marshal(expected)
-		actualMap, _ := json.Marshal(actual)
+		expectedMap, err := json.Marshal(expected)
+		assert.NoError(t, err)
+		actualMap, err := json.Marshal(actual)
+		assert.NoError(t, err)
 		t.Error("Wrong matching expected: `" + string(expectedMap) + "` Got `" + string(actualMap) + "`")
 	}
 }
@@ -161,4 +168,114 @@ func TestListToText(t *testing.T) {
 	assert.Equal(t, ListToText([]string{"one"}), "one")
 	assert.Equal(t, ListToText([]string{"one", "two"}), "one and two")
 	assert.Equal(t, ListToText([]string{"one", "two", "three"}), "one, two and three")
+}
+
+func TestSplitRepoAndServerId(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		serverAndRepo string
+		remoteEnv     string
+		serverID      string
+		repoName      string
+		err           error
+	}{
+		{
+			serverAndRepo: "myServer/myRepo",
+			remoteEnv:     ReleasesRemoteEnv,
+			serverID:      "myServer",
+			repoName:      "myRepo",
+			err:           nil,
+		},
+		{
+			serverAndRepo: "/myRepo",
+			remoteEnv:     DeprecatedExtractorsRemoteEnv,
+			serverID:      "",
+			repoName:      "",
+			err:           fmt.Errorf("'%s' environment variable is '/myRepo' but should be '<server ID>/<repo name>'", DeprecatedExtractorsRemoteEnv),
+		},
+		{
+			serverAndRepo: "myServer/",
+			remoteEnv:     ReleasesRemoteEnv,
+			serverID:      "",
+			repoName:      "",
+			err:           fmt.Errorf("'%s' environment variable is 'myServer/' but should be '<server ID>/<repo name>'", ReleasesRemoteEnv),
+		},
+		{
+			serverAndRepo: "",
+			remoteEnv:     ReleasesRemoteEnv,
+			serverID:      "",
+			repoName:      "",
+			err:           nil,
+		},
+		{
+			serverAndRepo: "myServer/my/Repo",
+			remoteEnv:     ReleasesRemoteEnv,
+			serverID:      "myServer",
+			repoName:      "my/Repo",
+			err:           nil,
+		},
+	}
+	for _, test := range tests {
+		func() {
+			assert.NoError(t, os.Setenv(test.remoteEnv, test.serverAndRepo))
+			defer func() {
+				assert.NoError(t, os.Unsetenv(test.remoteEnv))
+			}()
+			serverID, repoName, err := GetServerIdAndRepo(test.remoteEnv)
+			if err != nil {
+				assert.Equal(t, test.err.Error(), err.Error())
+				return
+			}
+			// Assert the results
+			assert.Equal(t, test.serverID, serverID)
+			assert.Equal(t, test.repoName, repoName)
+		}()
+	}
+}
+
+func TestGetFullPathsWorkingDirs(t *testing.T) {
+	currentDir, err := GetWorkingDirectory()
+	assert.NoError(t, err)
+	dir1, err := filepath.Abs("dir1")
+	assert.NoError(t, err)
+	dir2, err := filepath.Abs("dir2")
+	assert.NoError(t, err)
+	tests := []struct {
+		name         string
+		workingDirs  []string
+		expectedDirs []string
+	}{
+		{
+			name:         "EmptyWorkingDirs",
+			workingDirs:  []string{},
+			expectedDirs: []string{currentDir},
+		},
+		{
+			name:         "ValidWorkingDirs",
+			workingDirs:  []string{"dir1", "dir2"},
+			expectedDirs: []string{dir1, dir2},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actualDirs, err := GetFullPathsWorkingDirs(test.workingDirs)
+			assert.NoError(t, err)
+			assert.Equal(t, test.expectedDirs, actualDirs, "Incorrect full paths of working directories")
+		})
+	}
+}
+
+func TestGetMaskedCommandString(t *testing.T) {
+	assert.Equal(t,
+		"pip -i ***@someurl.com/repo",
+		GetMaskedCommandString(exec.Command("pip", "-i", "https://user:pass@someurl.com/repo")))
+
+	assert.Equal(t,
+		"pip -i ***@someurl.com/repo --password=***",
+		GetMaskedCommandString(exec.Command("pip", "-i", "https://user:pass@someurl.com/repo", "--password=123")))
+
+	assert.Equal(t,
+		"pip -i ***@someurl.com/repo --access-token=***",
+		GetMaskedCommandString(exec.Command("pip", "-i", "https://user:pass@someurl.com/repo", "--access-token=123")))
 }

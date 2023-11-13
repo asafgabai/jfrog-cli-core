@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"encoding/json"
+
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 )
 
@@ -49,8 +50,8 @@ func fromServerDetails(details *ServerDetails) *configToken {
 		SshKeyPath:           details.SshKeyPath,
 		SshPassphrase:        details.SshPassphrase,
 		AccessToken:          details.AccessToken,
-		RefreshToken:         details.RefreshToken,
-		TokenRefreshInterval: details.TokenRefreshInterval,
+		RefreshToken:         details.ArtifactoryRefreshToken,
+		TokenRefreshInterval: details.ArtifactoryTokenRefreshInterval,
 		ClientCertPath:       details.ClientCertPath,
 		ClientCertKeyPath:    details.ClientCertKeyPath,
 		ServerId:             details.ServerId,
@@ -59,22 +60,22 @@ func fromServerDetails(details *ServerDetails) *configToken {
 
 func toServerDetails(detailsSerialization *configToken) *ServerDetails {
 	return &ServerDetails{
-		Url:                  detailsSerialization.Url,
-		ArtifactoryUrl:       detailsSerialization.ArtifactoryUrl,
-		DistributionUrl:      detailsSerialization.DistributionUrl,
-		MissionControlUrl:    detailsSerialization.MissionControlUrl,
-		PipelinesUrl:         detailsSerialization.PipelinesUrl,
-		XrayUrl:              detailsSerialization.XrayUrl,
-		User:                 detailsSerialization.User,
-		Password:             detailsSerialization.Password,
-		SshKeyPath:           detailsSerialization.SshKeyPath,
-		SshPassphrase:        detailsSerialization.SshPassphrase,
-		AccessToken:          detailsSerialization.AccessToken,
-		RefreshToken:         detailsSerialization.RefreshToken,
-		TokenRefreshInterval: detailsSerialization.TokenRefreshInterval,
-		ClientCertPath:       detailsSerialization.ClientCertPath,
-		ClientCertKeyPath:    detailsSerialization.ClientCertKeyPath,
-		ServerId:             detailsSerialization.ServerId,
+		Url:                             detailsSerialization.Url,
+		ArtifactoryUrl:                  detailsSerialization.ArtifactoryUrl,
+		DistributionUrl:                 detailsSerialization.DistributionUrl,
+		MissionControlUrl:               detailsSerialization.MissionControlUrl,
+		PipelinesUrl:                    detailsSerialization.PipelinesUrl,
+		XrayUrl:                         detailsSerialization.XrayUrl,
+		User:                            detailsSerialization.User,
+		Password:                        detailsSerialization.Password,
+		SshKeyPath:                      detailsSerialization.SshKeyPath,
+		SshPassphrase:                   detailsSerialization.SshPassphrase,
+		AccessToken:                     detailsSerialization.AccessToken,
+		ArtifactoryRefreshToken:         detailsSerialization.RefreshToken,
+		ArtifactoryTokenRefreshInterval: detailsSerialization.TokenRefreshInterval,
+		ClientCertPath:                  detailsSerialization.ClientCertPath,
+		ClientCertKeyPath:               detailsSerialization.ClientCertKeyPath,
+		ServerId:                        detailsSerialization.ServerId,
 	}
 }
 
@@ -85,7 +86,7 @@ func Export(details *ServerDetails) (string, error) {
 	}
 	// If config is encrypted, ask for master key.
 	if conf.Enc {
-		masterKeyFromFile, _, err := getMasterKeyFromSecurityConfFile()
+		masterKeyFromFile, err := getEncryptionKey()
 		if err != nil {
 			return "", err
 		}
@@ -104,8 +105,8 @@ func Export(details *ServerDetails) (string, error) {
 	return base64.StdEncoding.EncodeToString(buffer), nil
 }
 
-func Import(serverToken string) (*ServerDetails, error) {
-	decoded, err := base64.StdEncoding.DecodeString(serverToken)
+func Import(configTokenString string) (*ServerDetails, error) {
+	decoded, err := base64.StdEncoding.DecodeString(configTokenString)
 	if err != nil {
 		return nil, err
 	}

@@ -1,8 +1,6 @@
 package generic
 
 import (
-	"fmt"
-
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-client-go/artifactory/services"
@@ -63,7 +61,11 @@ func (glc *GitLfsCommand) CommandName() string {
 }
 
 func (glc *GitLfsCommand) deleteLfsFilesFromArtifactory(deleteItems *content.ContentReader) error {
-	log.Info("Deleting", deleteItems.Length, "files from", glc.configuration.Repo, "...")
+	length, err := deleteItems.Length()
+	if err != nil {
+		return errorutils.CheckError(err)
+	}
+	log.Info("Deleting", length, "files from", glc.configuration.Repo, "...")
 	servicesManager, err := utils.CreateServiceManager(glc.serverDetails, glc.retries, glc.retryWaitTimeMilliSecs, glc.DryRun())
 	if err != nil {
 		return err
@@ -92,7 +94,7 @@ func getGitLfsCleanParams(configuration *GitLfsCleanConfiguration) (gitLfsCleanP
 
 func (glc *GitLfsCommand) interactiveDeleteLfsFiles(filesToDelete *content.ContentReader) error {
 	for resultItem := new(clientutils.ResultItem); filesToDelete.NextRecord(resultItem) == nil; resultItem = new(clientutils.ResultItem) {
-		fmt.Println("  " + resultItem.Name)
+		log.Output("  " + resultItem.Name)
 	}
 	if err := filesToDelete.GetError(); err != nil {
 		return err

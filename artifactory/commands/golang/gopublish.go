@@ -1,13 +1,13 @@
 package golang
 
 import (
-	"github.com/jfrog/gofrog/version"
 	"os/exec"
 
 	"github.com/jfrog/build-info-go/build"
 	commandutils "github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	goutils "github.com/jfrog/jfrog-cli-core/v2/utils/golang"
+	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 )
 
@@ -17,6 +17,7 @@ type GoPublishCommandArgs struct {
 	buildConfiguration *utils.BuildConfiguration
 	version            string
 	detailedSummary    bool
+	excludedPatterns   []string
 	result             *commandutils.Result
 	utils.RepositoryConfig
 }
@@ -37,6 +38,15 @@ func (gpc *GoPublishCommand) CommandName() string {
 
 func (gpc *GoPublishCommand) SetConfigFilePath(configFilePath string) *GoPublishCommand {
 	gpc.configFilePath = configFilePath
+	return gpc
+}
+
+func (gpc *GoPublishCommand) GetExcludedPatterns() []string {
+	return gpc.excludedPatterns
+}
+
+func (gpc *GoPublishCommandArgs) SetExcludedPatterns(excludedPatterns []string) *GoPublishCommandArgs {
+	gpc.excludedPatterns = excludedPatterns
 	return gpc
 }
 
@@ -72,18 +82,17 @@ func (gpc *GoPublishCommand) Run() error {
 	if err != nil {
 		return err
 	}
-
-	version := version.NewVersion(artifactoryVersion)
-	if !version.AtLeast(minSupportedArtifactoryVersion) {
-		return errorutils.CheckErrorf("This operation requires Artifactory version 6.2.0 or higher. ")
-	}
-	var goBuild *build.Build
-	var buildName, buildNumber, project string
-	toCollect, err := gpc.buildConfiguration.IsCollectBuildInfo()
+	err = clientutils.ValidateMinimumVersion(clientutils.Artifactory, artifactoryVersion, minSupportedArtifactoryVersion)
 	if err != nil {
 		return err
 	}
-	if toCollect {
+	var goBuild *build.Build
+	var buildName, buildNumber, project string
+	collectBuildInfo, err := gpc.buildConfiguration.IsCollectBuildInfo()
+	if err != nil {
+		return err
+	}
+	if collectBuildInfo {
 		buildName, err = gpc.buildConfiguration.GetBuildName()
 		if err != nil {
 			return err
@@ -100,8 +109,8 @@ func (gpc *GoPublishCommand) Run() error {
 		}
 	}
 
-	// Publish the package to Artifactory
-	summary, artifacts, err := publishPackage(gpc.version, gpc.TargetRepo(), buildName, buildNumber, project, serviceManager)
+	// Publish the package to Artifactory.
+	summary, artifacts, err := publishPackage(gpc.version, gpc.TargetRepo(), buildName, buildNumber, project, gpc.GetExcludedPatterns(), serviceManager)
 	if err != nil {
 		return err
 	}
@@ -112,7 +121,7 @@ func (gpc *GoPublishCommand) Run() error {
 		result.SetReader(summary.TransferDetailsReader)
 	}
 	// Publish the build-info to Artifactory
-	if toCollect {
+	if collectBuildInfo {
 		goModule, err := goBuild.AddGoModule("")
 		if err != nil {
 			return errorutils.CheckError(err)

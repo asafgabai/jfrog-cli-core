@@ -1,8 +1,6 @@
 package utils
 
 import (
-	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +13,9 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 	"github.com/urfave/cli"
-	"gopkg.in/yaml.v2"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+	"gopkg.in/yaml.v3"
 )
 
 const BuildConfVersion = 1
@@ -104,13 +104,13 @@ func CreateBuildConfig(c *cli.Context, confType utils.ProjectType) (err error) {
 			err = configFile.configPip()
 		case utils.Pipenv:
 			err = configFile.configPipenv()
+		case utils.Poetry:
+			err = configFile.configPoetry()
 		case utils.Yarn:
 			err = configFile.configYarn()
 		case utils.Npm:
 			err = configFile.configNpm()
-		case utils.Dotnet:
-			fallthrough
-		case utils.Nuget:
+		case utils.Nuget, utils.Dotnet:
 			err = configFile.configDotnet()
 		case utils.Maven:
 			err = configFile.configMaven()
@@ -130,7 +130,7 @@ func CreateBuildConfig(c *cli.Context, confType utils.ProjectType) (err error) {
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-	if err = ioutil.WriteFile(configFilePath, resBytes, 0644); err != nil {
+	if err = os.WriteFile(configFilePath, resBytes, 0644); err != nil {
 		return errorutils.CheckError(err)
 	}
 	log.Info(confType.String() + " build config successfully created.")
@@ -233,6 +233,10 @@ func (configFile *ConfigFile) configPipenv() error {
 	return configFile.setResolver()
 }
 
+func (configFile *ConfigFile) configPoetry() error {
+	return configFile.setResolver()
+}
+
 func (configFile *ConfigFile) configYarn() error {
 	return configFile.setResolver()
 }
@@ -257,24 +261,16 @@ func (configFile *ConfigFile) configMaven() error {
 		return err
 	}
 	if configFile.Resolver.ServerId != "" {
-		if err := configFile.setRepo(&configFile.Resolver.ReleaseRepo, "Set resolution repository for release dependencies", configFile.Resolver.ServerId, utils.REMOTE); err != nil {
-			return err
-		}
-		if err := configFile.setRepo(&configFile.Resolver.SnapshotRepo, "Set resolution repository for snapshot dependencies", configFile.Resolver.ServerId, utils.REMOTE); err != nil {
-			return err
-		}
+		configFile.setRepo(&configFile.Resolver.ReleaseRepo, "Set resolution repository for release dependencies", configFile.Resolver.ServerId, utils.Remote)
+		configFile.setRepo(&configFile.Resolver.SnapshotRepo, "Set resolution repository for snapshot dependencies", configFile.Resolver.ServerId, utils.Remote)
 	}
 	// Set deployment repositories
 	if err := configFile.setDeployerId(); err != nil {
 		return err
 	}
 	if configFile.Deployer.ServerId != "" {
-		if err := configFile.setRepo(&configFile.Deployer.ReleaseRepo, "Set repository for release artifacts deployment", configFile.Deployer.ServerId, utils.LOCAL); err != nil {
-			return err
-		}
-		if err := configFile.setRepo(&configFile.Deployer.SnapshotRepo, "Set repository for snapshot artifacts deployment", configFile.Deployer.ServerId, utils.LOCAL); err != nil {
-			return err
-		}
+		configFile.setRepo(&configFile.Deployer.ReleaseRepo, "Set repository for release artifacts deployment", configFile.Deployer.ServerId, utils.Local)
+		configFile.setRepo(&configFile.Deployer.SnapshotRepo, "Set repository for snapshot artifacts deployment", configFile.Deployer.ServerId, utils.Local)
 		configFile.setIncludeExcludePatterns()
 	}
 	return nil
@@ -284,7 +280,7 @@ func (configFile *ConfigFile) setIncludeExcludePatterns() {
 	if !coreutils.AskYesNo("Would you like to filter out some of the deployed artifacts?", false) {
 		return
 	}
-	fmt.Println("You may set multiple wildcard patterns, to match the artifacts' names you'd like to include and/or exclude from being deployed.")
+	log.Output("You may set multiple wildcard patterns, to match the artifacts' names you'd like to include and/or exclude from being deployed.")
 	includePatterns := getIncludeExcludePatterns("include")
 	if includePatterns != "" {
 		configFile.Deployer.IncludePatterns = includePatterns
@@ -299,7 +295,7 @@ func getIncludeExcludePatterns(patternType string) string {
 	var patterns []string
 	patternNum := 1
 	for {
-		newPattern := AskString("", strings.Title(patternType)+" pattern "+strconv.Itoa(patternNum)+" (leave empty to continue):", true, false)
+		newPattern := AskString("", cases.Title(language.Und, cases.NoLower).String(patternType)+" pattern "+strconv.Itoa(patternNum)+" (leave empty to continue):", true, false)
 		if newPattern == "" {
 			return strings.Join(patterns, ", ")
 		}
@@ -336,7 +332,7 @@ func (configFile *ConfigFile) setDeployer() error {
 
 	// Set deployment repository
 	if configFile.Deployer.ServerId != "" {
-		return configFile.setRepo(&configFile.Deployer.Repo, "Set repository for artifacts deployment", configFile.Deployer.ServerId, utils.LOCAL)
+		configFile.setRepo(&configFile.Deployer.Repo, "Set repository for artifacts deployment", configFile.Deployer.ServerId, utils.Local)
 	}
 	return nil
 }
@@ -348,7 +344,7 @@ func (configFile *ConfigFile) setResolver() error {
 	}
 	// Set resolution repository
 	if configFile.Resolver.ServerId != "" {
-		return configFile.setRepo(&configFile.Resolver.Repo, "Set repository for dependencies resolution", configFile.Resolver.ServerId, utils.REMOTE)
+		configFile.setRepo(&configFile.Resolver.Repo, "Set repository for dependencies resolution", configFile.Resolver.ServerId, utils.Remote)
 	}
 	return nil
 }
@@ -374,12 +370,10 @@ func (configFile *ConfigFile) setServerId(serverId *string, useArtifactoryQuesti
 	return err
 }
 
-func (configFile *ConfigFile) setRepo(repo *string, message string, serverId string, repoType utils.RepoType) error {
-	var err error
+func (configFile *ConfigFile) setRepo(repo *string, message string, serverId string, repoType utils.RepoType) {
 	if *repo == "" {
-		*repo, err = readRepo(message+PressTabMsg, serverId, repoType, utils.VIRTUAL)
+		*repo = readRepo(message+PressTabMsg, serverId, repoType, utils.Virtual)
 	}
-	return err
 }
 
 func (configFile *ConfigFile) setMavenIvyDescriptors() {
@@ -399,34 +393,34 @@ func (configFile *ConfigFile) setUseNugetV2() {
 func validateRepositoryConfig(repository *utils.Repository, errorPrefix string) error {
 	releaseRepo := repository.ReleaseRepo
 	snapshotRepo := repository.SnapshotRepo
-	// For config commands - resolver/deployer server-id flags are optional.
-	// In case no server-id flag was provided we use the default configured server id.
-	defaultServerDetails, err := config.GetDefaultServerConf()
-	if err != nil {
-		return err
-	}
-	defaultServerId := ""
-	if defaultServerDetails != nil {
-		defaultServerId = defaultServerDetails.ServerId
+
+	if repository.ServerId != "" && repository.Repo == "" && releaseRepo == "" && snapshotRepo == "" {
+		return errorutils.CheckErrorf(errorPrefix + setRepositoryError)
 	}
 	// Server-id flag was not provided.
 	if repository.ServerId == "" {
-		// No default server was configured.
-		if defaultServerId == "" {
+		// If no Server ID provided, check if provided via environment variable
+		serverId := os.Getenv(coreutils.ServerID)
+		if serverId == "" {
+			// For config commands - resolver/deployer server-id flags are optional.
+			// In case no server-id flag was provided we use the default configured server id.
+			defaultServerDetails, err := config.GetDefaultServerConf()
+			if err != nil {
+				return err
+			}
+			if defaultServerDetails != nil {
+				serverId = defaultServerDetails.ServerId
+			}
+		}
+		// No default server was configured and also no environment variable
+		if serverId == "" {
 			// Repositories flags were provided.
 			if repository.Repo != "" || releaseRepo != "" || snapshotRepo != "" {
 				return errorutils.CheckErrorf(errorPrefix + setServerIdError)
 			}
-		} else {
+		} else if repository.Repo != "" || releaseRepo != "" || snapshotRepo != "" {
 			// Server-id flag wasn't provided and repositories flags were provided - the default configured global server will be chosen.
-			if repository.Repo != "" || releaseRepo != "" || snapshotRepo != "" {
-				repository.ServerId = defaultServerId
-			}
-		}
-	} else {
-		// Server-id flag was provided, but no repositories flags.
-		if repository.Repo == "" && releaseRepo == "" && snapshotRepo == "" {
-			return errorutils.CheckErrorf(errorPrefix + setRepositoryError)
+			repository.ServerId = serverId
 		}
 	}
 	// Release/snapshot repositories should be entangled to each other.
@@ -467,7 +461,7 @@ func readArtifactoryServer(useArtifactoryQuestion string) (string, error) {
 	return AskFromList("", "Set Artifactory server ID", false, ConvertToSuggests(serversIds), defaultServer), nil
 }
 
-func readRepo(promptPrefix string, serverId string, repoTypes ...utils.RepoType) (string, error) {
+func readRepo(promptPrefix string, serverId string, repoTypes ...utils.RepoType) string {
 	availableRepos, err := getRepositories(serverId, repoTypes...)
 	if err != nil {
 		log.Error("failed getting repositories list: " + err.Error())
@@ -475,9 +469,9 @@ func readRepo(promptPrefix string, serverId string, repoTypes ...utils.RepoType)
 		availableRepos = []string{}
 	}
 	if len(availableRepos) > 0 {
-		return AskFromListWithMismatchConfirmation(promptPrefix, "Repository not found.", ConvertToSuggests(availableRepos)), nil
+		return AskFromListWithMismatchConfirmation(promptPrefix, "Repository not found.", ConvertToSuggests(availableRepos))
 	}
-	return AskString("", promptPrefix, false, false), nil
+	return AskString("", promptPrefix, false, false)
 }
 
 func getServersIdAndDefault() ([]string, string, error) {
@@ -502,12 +496,7 @@ func getRepositories(serverId string, repoTypes ...utils.RepoType) ([]string, er
 		return nil, err
 	}
 
-	artAuth, err := artDetails.CreateArtAuthConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	return utils.GetRepositories(artAuth, repoTypes...)
+	return utils.GetRepositories(artDetails, repoTypes...)
 }
 
 func defaultIfNotSet(c *cli.Context, flagName string, defaultValue string) string {

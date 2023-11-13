@@ -2,8 +2,10 @@ package coreutils
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"golang.org/x/term"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +17,25 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"github.com/pkg/errors"
 )
 
 const (
 	GettingStartedGuideUrl = "https://github.com/jfrog/jfrog-cli/blob/v2/guides/getting-started-with-jfrog-using-the-cli.md"
+	JFrogComUrl            = "https://jfrog.com/"
+	JFrogHelpUrl           = JFrogComUrl + "help/r/"
+)
+
+const (
+	// ReleasesRemoteEnv should be used for downloading the CLI dependencies (extractor jars, analyzerManager etc.) through an Artifactory remote
+	// repository, instead of downloading directly from releases.jfrog.io. The remote repository should be
+	// configured to proxy releases.jfrog.io.
+	// This env var should store a server ID and a remote repository in form of '<ServerID>/<RemoteRepo>'
+	ReleasesRemoteEnv = "JFROG_CLI_RELEASES_REPO"
+	// DeprecatedExtractorsRemoteEnv is deprecated, it is replaced with ReleasesRemoteEnv.
+	// Its functionality was similar to ReleasesRemoteEnv, but it proxies releases.jfrog.io/artifactory/oss-release-local instead.
+	DeprecatedExtractorsRemoteEnv = "JFROG_CLI_EXTRACTORS_REMOTE"
+	// JFrog releases URL
+	JfrogReleasesUrl = "https://releases.jfrog.io/artifactory/"
 )
 
 // Error modes (how should the application behave when the CheckError function is invoked):
@@ -95,8 +111,9 @@ func PanicOnError(err error) error {
 }
 
 func ExitOnErr(err error) {
-	if err, ok := err.(CliError); ok {
-		traceExit(err.ExitCode, err)
+	var cliError CliError
+	if errors.As(err, &cliError) {
+		traceExit(cliError.ExitCode, err)
 	}
 	if exitCode := GetExitCode(err, 0, 0, false); exitCode != ExitCodeNoError {
 		traceExit(exitCode, err)
@@ -127,7 +144,8 @@ func GetExitCode(err error, success, failed int, failNoOp bool) ExitCode {
 // We would like to return a regular error instead of ExitError,
 // because some frameworks (such as codegangsta used by JFrog CLI) automatically exit when this error is returned.
 func ConvertExitCodeError(err error) error {
-	if _, ok := err.(*exec.ExitError); ok {
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
 		err = errors.New(err.Error())
 	}
 	return err
@@ -135,7 +153,7 @@ func ConvertExitCodeError(err error) error {
 
 // GetCliConfigVersion returns the latest version of the config.yml file on the file system at '.jfrog'.
 func GetCliConfigVersion() int {
-	return 5
+	return 6
 }
 
 // GetPluginsConfigVersion returns the latest plugins layout version on the file system (at '.jfrog/plugins').
@@ -192,6 +210,42 @@ func IsLinux() bool {
 	return runtime.GOOS == "linux"
 }
 
+func IsMac() bool {
+	return runtime.GOOS == "darwin"
+}
+
+func GetOSAndArc() (string, error) {
+	arch := runtime.GOARCH
+	// Windows
+	if IsWindows() {
+		return "windows-amd64", nil
+	}
+	// Mac
+	if IsMac() {
+		if arch == "arm64" {
+			return "mac-arm64", nil
+		} else {
+			return "mac-amd64", nil
+		}
+	}
+	// Linux
+	if IsLinux() {
+		switch arch {
+		case "i386", "i486", "i586", "i686", "i786", "x86":
+			return "linux-386", nil
+		case "amd64", "x86_64", "x64":
+			return "linux-amd64", nil
+		case "arm", "armv7l":
+			return "linux-arm", nil
+		case "arm64", "aarch64":
+			return "linux-arm64", nil
+		case "ppc64", "ppc64le":
+			return "linux-" + arch, nil
+		}
+	}
+	return "", errorutils.CheckErrorf("unsupported OS: %s-%s", runtime.GOOS, arch)
+}
+
 // Return the path of CLI temp dir.
 // This path should be persistent, meaning - should not be cleared at the end of a CLI run.
 func GetCliPersistentTempDirPath() string {
@@ -211,9 +265,25 @@ func GetWorkingDirectory() (string, error) {
 	return currentDir, nil
 }
 
-// IsTerminal checks whether stdout is a terminal.
-func IsTerminal() bool {
-	return term.IsTerminal(int(os.Stdout.Fd()))
+// Receives a list of relative path working dirs, returns a list of full paths working dirs
+func GetFullPathsWorkingDirs(workingDirs []string) ([]string, error) {
+	if len(workingDirs) == 0 {
+		currentDir, err := GetWorkingDirectory()
+		if err != nil {
+			return nil, err
+		}
+		return []string{currentDir}, nil
+	}
+
+	var fullPathsWorkingDirs []string
+	for _, wd := range workingDirs {
+		fullPathWd, err := filepath.Abs(wd)
+		if err != nil {
+			return nil, err
+		}
+		fullPathsWorkingDirs = append(fullPathsWorkingDirs, fullPathWd)
+	}
+	return fullPathsWorkingDirs, nil
 }
 
 type Credentials interface {
@@ -228,7 +298,7 @@ func ReplaceVars(content []byte, specVars map[string]string) []byte {
 	for key, val := range specVars {
 		key = "${" + key + "}"
 		log.Debug(fmt.Sprintf("Replacing '%s' with '%s'", key, val))
-		content = bytes.Replace(content, []byte(key), []byte(val), -1)
+		content = bytes.ReplaceAll(content, []byte(key), []byte(val))
 	}
 	log.Debug("The reformatted content is: \n" + string(content))
 	return content
@@ -364,6 +434,31 @@ func GetJfrogPluginsLockDir() (string, error) {
 	return filepath.Join(locksDirPath, pluginsLockDirName), nil
 }
 
+func GetJfrogTransferLockDir() (string, error) {
+	transferLockDirName := "transfer"
+	locksDirPath, err := GetJfrogLocksDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(locksDirPath, transferLockDirName), nil
+}
+
+func GetJfrogTransferRunStatusFilePath() (string, error) {
+	transferDir, err := GetJfrogTransferDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(transferDir, JfrogTransferRunStatusFileName), nil
+}
+
+func GetJfrogTransferRepositoriesDir() (string, error) {
+	transferDir, err := GetJfrogTransferDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(transferDir, JfrogTransferRepositoriesDirName), nil
+}
+
 // Ask a yes or no question, with a default answer.
 func AskYesNo(promptPrefix string, defaultValue bool) bool {
 	defStr := "[n]"
@@ -379,7 +474,7 @@ func AskYesNo(promptPrefix string, defaultValue bool) bool {
 		if valid {
 			return parsed
 		}
-		fmt.Println("Please enter a valid option.")
+		log.Output("Please enter a valid option.")
 	}
 }
 
@@ -406,6 +501,16 @@ func parseYesNo(s string, def bool) (ans, valid bool) {
 		return false, true
 	}
 	return false, false
+}
+
+func GetJsonIndent(o any) (strJson string, err error) {
+	byteJson, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		err = errorutils.CheckError(err)
+		return
+	}
+	strJson = string(byteJson)
+	return
 }
 
 func GetCliUserAgent() string {
@@ -467,4 +572,59 @@ func ListToText(list []string) string {
 
 func RemoveAllWhiteSpaces(input string) string {
 	return strings.Join(strings.Fields(input), "")
+}
+
+func GetJfrogTransferDir() (string, error) {
+	homeDir, err := GetJfrogHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, JfrogTransferDirName), nil
+}
+
+func GetServerIdAndRepo(remoteEnv string) (serverID string, repoName string, err error) {
+	serverAndRepo := os.Getenv(remoteEnv)
+	if serverAndRepo == "" {
+		log.Debug(remoteEnv, "is not set")
+		return
+	}
+	// The serverAndRepo is in the form of '<ServerID>/<RemoteRepo>'
+	serverID, repoName, separatorExists := strings.Cut(serverAndRepo, "/")
+	// Check that the format is valid
+	if !separatorExists || repoName == "" || serverID == "" {
+		err = errorutils.CheckErrorf("'%s' environment variable is '%s' but should be '<server ID>/<repo name>'", remoteEnv, serverAndRepo)
+	}
+	return
+}
+
+func GetMaskedCommandString(cmd *exec.Cmd) string {
+	cmdString := strings.Join(cmd.Args, " ")
+	// Mask url if required
+	matchedResult := regexp.MustCompile(utils.CredentialsInUrlRegexp).FindString(cmdString)
+	if matchedResult != "" {
+		cmdString = strings.ReplaceAll(cmdString, matchedResult, "***@")
+	}
+
+	matchedResults := regexp.MustCompile(`--(?:password|access-token)=(\S+)`).FindStringSubmatch(cmdString)
+	if len(matchedResults) > 1 && matchedResults[1] != "" {
+		cmdString = strings.ReplaceAll(cmdString, matchedResults[1], "***")
+	}
+	return cmdString
+}
+
+func SetPermissionsRecursively(dirPath string, mode os.FileMode) error {
+	err := filepath.WalkDir(dirPath, func(path string, info fs.DirEntry, e error) error {
+		if e != nil {
+			return e
+		}
+		e = os.Chmod(path, mode)
+		if e != nil {
+			return e
+		}
+		return nil
+	})
+	if err != nil {
+		return errorutils.CheckErrorf("failed while setting permission to '%s' files: %s", dirPath, err.Error())
+	}
+	return nil
 }

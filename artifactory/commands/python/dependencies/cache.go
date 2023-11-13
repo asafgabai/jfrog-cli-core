@@ -5,7 +5,7 @@ import (
 	buildinfo "github.com/jfrog/build-info-go/entities"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -37,7 +37,7 @@ func GetProjectDependenciesCache(cacheDir string) (cache *DependenciesCache, err
 			err = e
 		}
 	}()
-	byteValue, err := ioutil.ReadAll(jsonFile)
+	byteValue, err := io.ReadAll(jsonFile)
 	if errorutils.CheckError(err) != nil {
 		return nil, err
 	}
@@ -89,16 +89,12 @@ func (cache DependenciesCache) GetDependency(dependencyName string) (dependency 
 
 // Cache file will be located in the ./.jfrog/projects/deps.cache.json
 func getCacheFilePath(cacheDir string) (cacheFilePath string, exists bool, err error) {
-	if errorutils.CheckError(err) != nil {
-		return "", false, err
-	}
 	projectsDirPath := filepath.Join(cacheDir, ".jfrog", "projects")
 	err = fileutils.CreateDirIfNotExist(projectsDirPath)
 	if err != nil {
-		return "", false, err
+		return
 	}
 	cacheFilePath = filepath.Join(projectsDirPath, "deps.cache.json")
 	exists, err = fileutils.IsFileExists(cacheFilePath, false)
-
 	return
 }

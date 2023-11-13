@@ -1,8 +1,8 @@
 package dotnet
 
 import (
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils/dotnet"
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils/dotnet/solution"
+	"github.com/jfrog/build-info-go/build/utils/dotnet"
+	"github.com/jfrog/build-info-go/build/utils/dotnet/solution"
 	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
@@ -20,7 +20,6 @@ func NewNugetCommand() *NugetCommand {
 }
 
 func (nc *NugetCommand) Run() error {
-	nc.useNugetAddSource = true
 	return nc.Exec()
 }
 
@@ -30,14 +29,14 @@ func DependencyTreeCmd() error {
 		return errorutils.CheckError(err)
 	}
 
-	sol, err := solution.Load(workspace, "")
+	sol, err := solution.Load(workspace, "", log.Logger)
 	if err != nil {
 		return err
 	}
 
 	// Create the tree for each project
 	for _, project := range sol.GetProjects() {
-		err = project.CreateDependencyTree()
+		err = project.CreateDependencyTree(log.Logger)
 		if err != nil {
 			return err
 		}

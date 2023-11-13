@@ -2,15 +2,12 @@ package plugins
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/lock"
 	cliLog "github.com/jfrog/jfrog-cli-core/v2/utils/log"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"github.com/pkg/errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,60 +28,59 @@ type PluginsV1 struct {
 
 // CheckPluginsVersionAndConvertIfNeeded In case the latest plugin's layout version isn't match to the local plugins hierarchy at '.jfrog/plugins' -
 // Migrate to the latest version.
-func CheckPluginsVersionAndConvertIfNeeded() error {
+func CheckPluginsVersionAndConvertIfNeeded() (err error) {
+	// Check if 'plugins' directory exists in .jfrog
+	jfrogHomeDir, err := coreutils.GetJfrogHomeDir()
+	if err != nil {
+		return
+	}
+	exists, err := fileutils.IsDirExists(filepath.Join(jfrogHomeDir, coreutils.JfrogPluginsDirName), false)
+	if err != nil || !exists {
+		return
+	}
+
+	return readPluginsConfigAndConvertV0tToV1IfNeeded()
+}
+
+func readPluginsConfigAndConvertV0tToV1IfNeeded() (err error) {
+	content, err := getPluginsConfigFileContent()
+	// Return without converting in case of an error, or if the plugins.yml file already exists, which indicates a conversion has already been made.
+	if err != nil || len(content) != 0 {
+		return
+	}
 	// Locking mechanism - two threads in the same process.
 	mutex.Lock()
 	defer mutex.Unlock()
 	// Locking mechanism - in case two process would read/migrate local files at '.jfrog/plugins'.
-	lockDirPath, err := coreutils.GetJfrogPluginsLockDir()
+	var lockDirPath string
+	lockDirPath, err = coreutils.GetJfrogPluginsLockDir()
 	if err != nil {
-		return err
+		return
 	}
-	lockFile, err := lock.CreateLock(lockDirPath)
-	defer lockFile.Unlock()
+	var unlockFunc func() error
+	unlockFunc, err = lock.CreateLock(lockDirPath)
+	// Defer the lockFile.Unlock() function before throwing a possible error to avoid deadlock situations.
+	defer func() {
+		e := unlockFunc()
+		if err == nil {
+			err = e
+		}
+	}()
 	if err != nil {
-		return err
+		return
 	}
-	// Check if 'plugins' directory exists in .jfrog
-	jfrogHomeDir, err := coreutils.GetJfrogHomeDir()
+	// The reason behind reading the config again is that it's possible that another thread or process already changed the plugins file,
+	// So we read again inside that locked section to indicate that we indeed need to convert the plugins' layout.
+	content, err = getPluginsConfigFileContent()
 	if err != nil {
-		return err
-	}
-	exists, err := fileutils.IsDirExists(filepath.Join(jfrogHomeDir, coreutils.JfrogPluginsDirName), false)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-
-	plugins, err := readPluginsConfig()
-	if err != nil {
-		return err
-	}
-	if plugins.Version != coreutils.GetPluginsConfigVersion() {
-		return errorutils.CheckError(errors.New(fmt.Sprintf("Expected plugins version in 'plugins.yaml is %d but the actual value is %d", coreutils.GetPluginsConfigVersion(), plugins.Version)))
-	}
-	return nil
-}
-
-func readPluginsConfig() (*PluginsV1, error) {
-	plugins := new(PluginsV1)
-	content, err := getPluginsConfigFileContent()
-	if err != nil {
-		return nil, err
+		return
 	}
 	if len(content) == 0 {
 		// No plugins.yaml file was found. This means that we are in v0.
 		// Convert plugins layout to the latest version.
-		return convertPluginsV0ToV1()
+		_, err = convertPluginsV0ToV1()
 	}
-
-	err = json.Unmarshal(content, &plugins)
-	if err != nil {
-		return nil, errorutils.CheckError(err)
-	}
-	return plugins, err
+	return
 }
 
 func getPluginsConfigFileContent() (content []byte, err error) {
@@ -113,6 +109,7 @@ func convertPluginsV0ToV1() (*PluginsV1, error) {
 }
 
 // Change the file's hierarchy inside 'plugins' directory to:
+//
 //	plugins (dir)
 //		plugin-name (dir)
 //			bin (dir)
@@ -185,7 +182,7 @@ func CreatePluginsConfigFile() (*PluginsV1, error) {
 	if err != nil {
 		return nil, errorutils.CheckError(err)
 	}
-	err = ioutil.WriteFile(pluginsFilePath, content, 0600)
+	err = os.WriteFile(pluginsFilePath, content, 0600)
 	if err != nil {
 		return nil, errorutils.CheckError(err)
 	}

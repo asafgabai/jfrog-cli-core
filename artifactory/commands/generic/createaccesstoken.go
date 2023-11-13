@@ -2,6 +2,7 @@ package generic
 
 import (
 	"encoding/json"
+	"github.com/jfrog/jfrog-client-go/auth"
 	"strings"
 
 	rtUtils "github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
@@ -24,11 +25,11 @@ type AccessTokenCreateCommand struct {
 	audience      string
 	groups        string
 	grantAdmin    bool
-	response      *services.CreateTokenResponseData
+	response      *auth.CreateTokenResponseData
 }
 
 func NewAccessTokenCreateCommand() *AccessTokenCreateCommand {
-	return &AccessTokenCreateCommand{response: new(services.CreateTokenResponseData)}
+	return &AccessTokenCreateCommand{response: new(auth.CreateTokenResponseData)}
 }
 
 func (atcc *AccessTokenCreateCommand) SetServerDetails(serverDetails *config.ServerDetails) *AccessTokenCreateCommand {
@@ -99,9 +100,9 @@ func (atcc *AccessTokenCreateCommand) getTokenParams() (tokenParams services.Cre
 	tokenParams.Refreshable = atcc.refreshable
 	tokenParams.Audience = atcc.audience
 	// Artifactory expects the username to be lower-cased. In case it is not,
-	// Artifactory will still accept a non lower-cased user, except for token related actions.
+	// Artifactory will still accept a non-lower-cased user, except for token related actions.
 	tokenParams.Username = strings.ToLower(atcc.userName)
-	// By default we will create "user-scoped token", unless specific groups or admin-privilege-instance were specified
+	// By default, we will create "user-scoped token", unless specific groups or admin-privilege-instance were specified
 	if len(atcc.groups) == 0 && !atcc.grantAdmin {
 		atcc.groups = UserScopedNotation
 	}

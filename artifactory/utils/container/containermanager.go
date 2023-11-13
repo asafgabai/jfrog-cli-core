@@ -8,11 +8,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jfrog/gofrog/version"
-
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-client-go/auth"
+	"github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 )
@@ -24,7 +23,7 @@ var ApiVersionRegex = regexp.MustCompile(`^(\d+)\.(\d+)$`)
 const MinSupportedApiVersion string = "1.31"
 
 // Docker login error message
-const LoginFailureMessage string = "%s login failed for: %s.\n %s image must be in the form: registry-domain/path-in-repository/image-name:version."
+const LoginFailureMessage string = "%s login failed for: %s.\n%s image must be in the form: registry-domain/path-in-repository/image-name:version."
 
 func NewManager(containerManagerType ContainerManagerType) ContainerManager {
 	return &containerManager{Type: containerManagerType}
@@ -68,7 +67,10 @@ func (containerManager *containerManager) RunNativeCmd(cmdParams []string) error
 func (containerManager *containerManager) Id(image *Image) (string, error) {
 	cmd := &getImageIdCmd{image: image, containerManager: containerManager.Type}
 	content, err := cmd.RunCmd()
-	return content[:strings.Index(content, "\n")], err
+	if err != nil {
+		return "", err
+	}
+	return strings.Split(content, "\n")[0], nil
 }
 
 // Return the OS and architecture on which the image runs e.g. (linux, amd64, nil).
@@ -105,6 +107,9 @@ func (nc *nativeCmd) RunCmd() error {
 	command := nc.GetCmd()
 	command.Stderr = os.Stderr
 	command.Stdout = os.Stderr
+	if nc.containerManager == DockerClient {
+		command.Env = append(os.Environ(), "DOCKER_SCAN_SUGGEST=false")
+	}
 	return command.Run()
 }
 
@@ -120,7 +125,7 @@ func (getImageId *getImageIdCmd) GetCmd() *exec.Cmd {
 	cmd = append(cmd, "--format", "{{.ID}}")
 	cmd = append(cmd, "--no-trunc")
 	cmd = append(cmd, getImageId.image.name)
-	return exec.Command(getImageId.containerManager.String(), cmd[:]...)
+	return exec.Command(getImageId.containerManager.String(), cmd...)
 }
 
 func (getImageId *getImageIdCmd) RunCmd() (string, error) {
@@ -145,7 +150,7 @@ func (getImageSystemCompatibilityCmd *getImageSystemCompatibilityCmd) GetCmd() *
 	cmd = append(cmd, getImageSystemCompatibilityCmd.image.name)
 	cmd = append(cmd, "--format")
 	cmd = append(cmd, "{{ .Os}},{{ .Architecture}}")
-	return exec.Command(getImageSystemCompatibilityCmd.containerManager.String(), cmd[:]...)
+	return exec.Command(getImageSystemCompatibilityCmd.containerManager.String(), cmd...)
 }
 
 func (getImageSystemCompatibilityCmd *getImageSystemCompatibilityCmd) RunCmd() (string, error) {
@@ -194,9 +199,8 @@ func ContainerManagerLogin(image *Image, config *ContainerManagerLoginConfig, co
 	// If access-token exists, perform login with it.
 	if config.ServerDetails.AccessToken != "" {
 		log.Debug("Using access-token details in " + containerManager.String() + "-login command.")
-		username, err = auth.ExtractUsernameFromAccessToken(config.ServerDetails.AccessToken)
-		if err != nil {
-			return err
+		if username == "" {
+			username = auth.ExtractUsernameFromAccessToken(config.ServerDetails.AccessToken)
 		}
 		password = config.ServerDetails.AccessToken
 	}
@@ -251,16 +255,8 @@ func ValidateClientApiVersion() error {
 	content = strings.TrimSpace(content)
 	if !ApiVersionRegex.Match([]byte(content)) {
 		// The Api version is expected to be 'major.minor'. Anything else should return an error.
-		log.Error("The Docker client Api version is expected to be 'major.minor'. The actual output is:" + content)
+		log.Error("The Docker client Api version is expected to be 'major.minor'. The actual output is:", content)
 		return errorutils.CheckError(err)
 	}
-	if !IsCompatibleApiVersion(content) {
-		return errorutils.CheckErrorf("This operation requires Docker API version " + MinSupportedApiVersion + " or higher.")
-	}
-	return nil
-}
-
-func IsCompatibleApiVersion(dockerOutput string) bool {
-	currentVersion := version.NewVersion(dockerOutput)
-	return currentVersion.AtLeast(MinSupportedApiVersion)
+	return utils.ValidateMinimumVersion(utils.DockerApi, content, MinSupportedApiVersion)
 }

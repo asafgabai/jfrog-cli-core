@@ -1,17 +1,16 @@
 package utils
 
 import (
-	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
-
-	"github.com/jfrog/gofrog/version"
 
 	xrutils "github.com/jfrog/jfrog-cli-core/v2/xray/utils"
 
-	"github.com/jfrog/jfrog-cli-core/v2/utils/ioutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
@@ -47,10 +46,7 @@ func getNpmAuth(authArtDetails *auth.ServiceDetails) (npmAuth string, err error)
 	}
 
 	// Get npm token from Artifactory
-	if (*authArtDetails).GetAccessToken() == "" {
-		return getNpmAuthUsingBasicAuth(authArtDetails)
-	}
-	return getNpmAuthUsingAccessToken(authArtDetails)
+	return getNpmAuthFromArtifactory(authArtDetails)
 }
 
 func validateArtifactoryVersionForNpmCmds(artDetails *auth.ServiceDetails) error {
@@ -61,30 +57,10 @@ func validateArtifactoryVersionForNpmCmds(artDetails *auth.ServiceDetails) error
 	}
 
 	// Validate version.
-	rtVersion := version.NewVersion(versionStr)
-	if !rtVersion.AtLeast(minSupportedArtifactoryVersionForNpmCmds) {
-		return errorutils.CheckErrorf("this operation requires Artifactory version " + minSupportedArtifactoryVersionForNpmCmds + " or higher")
-	}
-
-	return nil
+	return clientutils.ValidateMinimumVersion(clientutils.Artifactory, versionStr, minSupportedArtifactoryVersionForNpmCmds)
 }
 
-func getNpmAuthUsingAccessToken(artDetails *auth.ServiceDetails) (npmAuth string, err error) {
-	npmAuthString := "_auth = %s\nalways-auth = true"
-	// Build npm token, consists of <username:password> encoded.
-	// Use Artifactory's access-token as username and password to create npm token.
-	username, err := auth.ExtractUsernameFromAccessToken((*artDetails).GetAccessToken())
-	if err != nil {
-		return
-	}
-
-	encodedNpmToken := base64.StdEncoding.EncodeToString([]byte(username + ":" + (*artDetails).GetAccessToken()))
-	npmAuth = fmt.Sprintf(npmAuthString, encodedNpmToken)
-
-	return
-}
-
-func getNpmAuthUsingBasicAuth(artDetails *auth.ServiceDetails) (npmAuth string, err error) {
+func getNpmAuthFromArtifactory(artDetails *auth.ServiceDetails) (npmAuth string, err error) {
 	authApiUrl := (*artDetails).GetUrl() + "api/npm/auth"
 	log.Debug("Sending npm auth request")
 
@@ -97,8 +73,8 @@ func getNpmAuthUsingBasicAuth(artDetails *auth.ServiceDetails) (npmAuth string, 
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", errorutils.CheckErrorf("Artifactory response: " + resp.Status + "\n" + clientutils.IndentJson(body))
+	if err = errorutils.CheckResponseStatusWithBody(resp, body, http.StatusOK); err != nil {
+		return "", err
 	}
 
 	return string(body), nil
@@ -140,28 +116,53 @@ func ExtractNpmOptionsFromArgs(args []string) (detailedSummary, xrayScan bool, s
 // BackupFile creates a backup of the file in filePath. The backup will be found at backupPath.
 // The returned restore function can be called to restore the file's state - the file in filePath will be replaced by the backup in backupPath.
 // If there is no file at filePath, a backup file won't be created, and the restore function will delete the file at filePath.
-func BackupFile(filePath, backupPath string) (restore func() error, err error) {
+func BackupFile(filePath, backupFileName string) (restore func() error, err error) {
 	fileInfo, err := os.Stat(filePath)
-	if err != nil {
+	if errorutils.CheckError(err) != nil {
 		if os.IsNotExist(err) {
-			return createRestoreFileFunc(filePath, backupPath), nil
+			restore = createRestoreFileFunc(filePath, backupFileName)
+			err = nil
 		}
-		return nil, errorutils.CheckError(err)
+		return
 	}
 
-	fileMode := fileInfo.Mode()
-	if err = ioutils.CopyFile(filePath, backupPath, fileMode); err != nil {
-		return nil, err
+	if err = cloneFile(filePath, backupFileName, fileInfo.Mode()); err != nil {
+		return
 	}
-	log.Debug("The file", filePath, "was backed up successfully to", backupPath)
-	return createRestoreFileFunc(filePath, backupPath), nil
+	log.Debug("The file", filePath, "was backed up successfully to", backupFileName)
+	restore = createRestoreFileFunc(filePath, backupFileName)
+	return
+}
+
+func cloneFile(origFile, newName string, fileMode os.FileMode) (err error) {
+	from, err := os.Open(origFile)
+	if errorutils.CheckError(err) != nil {
+		return
+	}
+	defer func() {
+		err = errors.Join(err, from.Close())
+	}()
+
+	to, err := os.OpenFile(filepath.Join(filepath.Dir(origFile), newName), os.O_RDWR|os.O_CREATE, fileMode)
+	if errorutils.CheckError(err) != nil {
+		return
+	}
+	defer func() {
+		err = errors.Join(err, to.Close())
+	}()
+
+	if _, err = io.Copy(to, from); err != nil {
+		err = errorutils.CheckError(err)
+	}
+	return
 }
 
 // createRestoreFileFunc creates a function for restoring a file from its backup.
 // The returned function replaces the file in filePath with the backup in backupPath.
 // If there is no file at backupPath (which means there was no file at filePath when BackupFile() was called), then the function deletes the file at filePath.
-func createRestoreFileFunc(filePath, backupPath string) func() error {
+func createRestoreFileFunc(filePath, backupFileName string) func() error {
 	return func() error {
+		backupPath := filepath.Join(filepath.Dir(filePath), backupFileName)
 		if _, err := os.Stat(backupPath); err != nil {
 			if os.IsNotExist(err) {
 				err = os.Remove(filePath)
@@ -174,7 +175,6 @@ func createRestoreFileFunc(filePath, backupPath string) func() error {
 			return errorutils.CheckError(err)
 		}
 		log.Debug("Restored the file", filePath, "successfully")
-
 		return nil
 	}
 }

@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/jfrog/jfrog-cli-core/v2/common/spec"
-	"github.com/jfrog/jfrog-cli-core/v2/xray/commands"
+	xrayutils "github.com/jfrog/jfrog-cli-core/v2/xray/utils"
+	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
@@ -21,7 +22,8 @@ const (
 
 type DockerScanCommand struct {
 	ScanCommand
-	imageTag string
+	imageTag       string
+	targetRepoPath string
 }
 
 func NewDockerScanCommand() *DockerScanCommand {
@@ -33,13 +35,18 @@ func (dsc *DockerScanCommand) SetImageTag(imageTag string) *DockerScanCommand {
 	return dsc
 }
 
+func (dsc *DockerScanCommand) SetTargetRepoPath(repoPath string) *DockerScanCommand {
+	dsc.targetRepoPath = repoPath
+	return dsc
+}
+
 func (dsc *DockerScanCommand) Run() (err error) {
 	// Validate Xray minimum version
-	_, xrayVersion, err := commands.CreateXrayServiceManagerAndGetVersion(dsc.ScanCommand.serverDetails)
+	_, xrayVersion, err := xrayutils.CreateXrayServiceManagerAndGetVersion(dsc.ScanCommand.serverDetails)
 	if err != nil {
 		return err
 	}
-	err = commands.ValidateXrayMinimumVersion(xrayVersion, DockerScanMinXrayVersion)
+	err = clientutils.ValidateMinimumVersion(clientutils.Xray, xrayVersion, DockerScanMinXrayVersion)
 	if err != nil {
 		return err
 	}
@@ -70,7 +77,10 @@ func (dsc *DockerScanCommand) Run() (err error) {
 	}
 
 	// Perform scan on image.tar
-	dsc.SetSpec(spec.NewBuilder().Pattern(imageTarPath).BuildSpec()).SetThreads(1)
+	dsc.SetSpec(spec.NewBuilder().
+		Pattern(imageTarPath).
+		Target(dsc.targetRepoPath).
+		BuildSpec()).SetThreads(1)
 	err = dsc.setCredentialEnvsForIndexerApp()
 	if err != nil {
 		return errorutils.CheckError(err)

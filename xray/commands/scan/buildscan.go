@@ -4,8 +4,9 @@ import (
 	"errors"
 	rtutils "github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
-	"github.com/jfrog/jfrog-cli-core/v2/xray/commands"
+	"github.com/jfrog/jfrog-cli-core/v2/xray/utils"
 	xrutils "github.com/jfrog/jfrog-cli-core/v2/xray/utils"
+	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 	"github.com/jfrog/jfrog-client-go/xray"
 	"github.com/jfrog/jfrog-client-go/xray/services"
@@ -23,6 +24,7 @@ type BuildScanCommand struct {
 	includeVulnerabilities bool
 	failBuild              bool
 	printExtendedTable     bool
+	rescan                 bool
 }
 
 func NewBuildScanCommand() *BuildScanCommand {
@@ -63,18 +65,23 @@ func (bsc *BuildScanCommand) SetPrintExtendedTable(printExtendedTable bool) *Bui
 	return bsc
 }
 
+func (bsc *BuildScanCommand) SetRescan(rescan bool) *BuildScanCommand {
+	bsc.rescan = rescan
+	return bsc
+}
+
 // Scan published builds with Xray
 func (bsc *BuildScanCommand) Run() (err error) {
-	xrayManager, xrayVersion, err := commands.CreateXrayServiceManagerAndGetVersion(bsc.serverDetails)
+	xrayManager, xrayVersion, err := utils.CreateXrayServiceManagerAndGetVersion(bsc.serverDetails)
 	if err != nil {
 		return err
 	}
-	err = commands.ValidateXrayMinimumVersion(xrayVersion, BuildScanMinVersion)
+	err = clientutils.ValidateMinimumVersion(clientutils.Xray, xrayVersion, BuildScanMinVersion)
 	if err != nil {
 		return err
 	}
 	if bsc.includeVulnerabilities {
-		err = commands.ValidateXrayMinimumVersion(xrayVersion, BuildScanIncludeVulnerabilitiesMinVersion)
+		err = clientutils.ValidateMinimumVersion(clientutils.Xray, xrayVersion, BuildScanIncludeVulnerabilitiesMinVersion)
 		if err != nil {
 			return errors.New("build-scan command with '--vuln' flag is not supported on your current Xray version. " + err.Error())
 		}
@@ -91,9 +98,10 @@ func (bsc *BuildScanCommand) Run() (err error) {
 		BuildName:   buildName,
 		BuildNumber: buildNumber,
 		Project:     bsc.buildConfiguration.GetProject(),
+		Rescan:      bsc.rescan,
 	}
 
-	isFailBuildResponse, err := bsc.runBuildScanAndPrintResults(xrayManager, params)
+	isFailBuildResponse, err := bsc.runBuildScanAndPrintResults(xrayManager, xrayVersion, params)
 	if err != nil {
 		return err
 	}
@@ -104,7 +112,7 @@ func (bsc *BuildScanCommand) Run() (err error) {
 	return
 }
 
-func (bsc *BuildScanCommand) runBuildScanAndPrintResults(xrayManager *xray.XrayServicesManager, params services.XrayBuildParams) (isFailBuildResponse bool, err error) {
+func (bsc *BuildScanCommand) runBuildScanAndPrintResults(xrayManager *xray.XrayServicesManager, xrayVersion string, params services.XrayBuildParams) (isFailBuildResponse bool, err error) {
 	buildScanResults, noFailBuildPolicy, err := xrayManager.BuildScan(params, bsc.includeVulnerabilities)
 	if err != nil {
 		return false, err
@@ -118,22 +126,34 @@ func (bsc *BuildScanCommand) runBuildScanAndPrintResults(xrayManager *xray.XrayS
 		XrayDataUrl:     buildScanResults.MoreDetailsUrl,
 	}}
 
-	if bsc.outputFormat == xrutils.Json || bsc.outputFormat == xrutils.SimpleJson {
+	scanResults := xrutils.NewAuditResults()
+	scanResults.XrayVersion = xrayVersion
+	scanResults.ScaResults = []xrutils.ScaScanResult{{XrayResults: scanResponse}}
+
+	resultsPrinter := xrutils.NewResultsWriter(scanResults).
+		SetOutputFormat(bsc.outputFormat).
+		SetIncludeVulnerabilities(bsc.includeVulnerabilities).
+		SetIncludeLicenses(false).
+		SetIsMultipleRootProject(true).
+		SetPrintExtendedTable(bsc.printExtendedTable).
+		SetScanType(services.Binary).
+		SetExtraMessages(nil)
+
+	if bsc.outputFormat != xrutils.Table {
 		// Print the violations and/or vulnerabilities as part of one JSON.
-		err = xrutils.PrintScanResults(scanResponse, bsc.outputFormat, false, false, false, bsc.printExtendedTable)
+		err = resultsPrinter.PrintScanResults()
 	} else {
 		// Print two different tables for violations and vulnerabilities (if needed)
 
 		// If "No Xray Fail build policy...." error received, no need to print violations
 		if !noFailBuildPolicy {
-			err = xrutils.PrintScanResults(scanResponse, bsc.outputFormat, false, false, false, bsc.printExtendedTable)
-			if err != nil {
+			if err = resultsPrinter.PrintScanResults(); err != nil {
 				return false, err
 			}
 		}
 		if bsc.includeVulnerabilities {
-			err = xrutils.PrintScanResults(scanResponse, bsc.outputFormat, true, false, false, bsc.printExtendedTable)
-			if err != nil {
+			resultsPrinter.SetIncludeVulnerabilities(true)
+			if err = resultsPrinter.PrintScanResults(); err != nil {
 				return false, err
 			}
 		}

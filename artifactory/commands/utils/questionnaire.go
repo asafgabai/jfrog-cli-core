@@ -1,29 +1,29 @@
 package utils
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/c-bata/go-prompt"
-
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 const (
-	InsertValuePromptMsg = "Insert the value for "
+	insertValuePromptMsg = "Insert the value for "
 	DummyDefaultAnswer   = "-"
 )
 
 // The interactive questionnaire works as follows:
+//
 //	We have to provide a map of QuestionInfo which include all possible questions may be asked.
 //	1. Mandatory Questions:
 //		* We will ask all the questions in MandatoryQuestionsKeys list one after the other.
 //	2. Optional questions:
 //		* We have to provide a slice of prompt.Suggest, in which each suggest.Text is a key of a question in the map.
-//		* After a suggest was chosen from the list, the corresponding question from the map will be asked.
-//		* Each answer is written to to the configMap using its writer, under the MapKey specified in the questionInfo.
+//		* After a suggestion was chosen from the list, the corresponding question from the map will be asked.
+//		* Each answer is written to the configMap using its writer, under the MapKey specified in the questionInfo.
 //		* We will execute the previous step until the SaveAndExit string was inserted.
 type InteractiveQuestionnaire struct {
 	QuestionsMap           map[string]QuestionInfo
@@ -33,13 +33,13 @@ type InteractiveQuestionnaire struct {
 }
 
 // Each question can have the following properties:
-// 		* Msg - will be printed in separate line
-// 		* PromptPrefix - will be printed before the input cursor in the answer line
-// 		* Options - In case the answer must be selected from a predefined list
-// 		* AllowVars - a flag indicates whether a variable (in form of ${var}) is an acceptable answer despite the predefined list
-// 		* Writer - how to write the answer to the final config map
-// 		* MapKey - the key under which the answer will be written to the configMap
-// 		* Callback - optional function can be executed after the answer was inserted. Can be used to implement some dependencies between questions.
+//   - Msg - will be printed in separate line
+//   - PromptPrefix - will be printed before the input cursor in the answer line
+//   - Options - In case the answer must be selected from a predefined list
+//   - AllowVars - a flag indicates whether a variable (in form of ${var}) is an acceptable answer despite the predefined list
+//   - Writer - how to write the answer to the final config map
+//   - MapKey - the key under which the answer will be written to the configMap
+//   - Callback - optional function can be executed after the answer was inserted. Can be used to implement some dependencies between questions.
 type AnswerWriter func(resultMap *map[string]interface{}, key, value string) error
 type questionCallback func(*InteractiveQuestionnaire, string) (string, error)
 
@@ -69,7 +69,7 @@ const (
 )
 
 // Var can be inserted in the form of ${key}
-var VarPattern = regexp.MustCompile(`^\$\{\w+\}+$`)
+var VarPattern = regexp.MustCompile(`^\$\{\w+}+$`)
 
 func prefixCompleter(options []prompt.Suggest) prompt.Completer {
 	return func(document prompt.Document) []prompt.Suggest {
@@ -106,7 +106,7 @@ func AskString(msg, promptPrefix string, allowEmpty bool, allowVars bool) string
 // if not and a default value was provided, the default value is returned.
 func askString(msg, promptPrefix, defaultValue string, allowEmpty bool, allowVars bool) string {
 	if msg != "" {
-		fmt.Println(msg + ":")
+		log.Output(msg + ":")
 	}
 	errMsg := EmptyValueMsg
 	if allowVars {
@@ -123,7 +123,7 @@ func askString(msg, promptPrefix, defaultValue string, allowEmpty bool, allowVar
 		if defaultValue != "" {
 			return defaultValue
 		}
-		fmt.Println(errMsg)
+		log.Output(errMsg)
 	}
 }
 
@@ -132,7 +132,7 @@ func askString(msg, promptPrefix, defaultValue string, allowEmpty bool, allowVar
 // Otherwise, the answer must be chosen from the list, but can be a variable if allowVars set to true.
 func AskFromList(msg, promptPrefix string, allowVars bool, options []prompt.Suggest, defaultValue string) string {
 	if msg != "" {
-		fmt.Println(msg + PressTabMsg)
+		log.Output(msg + PressTabMsg)
 	}
 	errMsg := InvalidAnswerMsg
 	if allowVars {
@@ -148,7 +148,7 @@ func AskFromList(msg, promptPrefix string, allowVars bool, options []prompt.Sugg
 		if validateAnswer(answer, options, allowVars) {
 			return answer
 		}
-		fmt.Println(errMsg)
+		log.Output(errMsg)
 	}
 }
 
@@ -179,7 +179,7 @@ func AskFromListWithMismatchConfirmation(promptPrefix, misMatchMsg string, optio
 	for {
 		answer := prompt.Input(promptPrefix+" ", prefixCompleter(options), interruptKeyBind())
 		if answer == "" {
-			fmt.Println(EmptyValueMsg)
+			log.Output(EmptyValueMsg)
 		}
 		for _, option := range options {
 			if answer == option.Text {
@@ -193,9 +193,9 @@ func AskFromListWithMismatchConfirmation(promptPrefix, misMatchMsg string, optio
 }
 
 // Ask question steps:
-// 		1. Ask for string/from list
-//		2. Write the answer to answersMap (if writer provided)
-// 		3. Run callback (if provided)
+//  1. Ask for string/from list
+//  2. Write the answer to answersMap (if writer provided)
+//  3. Run callback (if provided)
 func (iq *InteractiveQuestionnaire) AskQuestion(question QuestionInfo) (value string, err error) {
 	var answer string
 	if question.Options != nil {
@@ -227,7 +227,7 @@ func (iq *InteractiveQuestionnaire) Perform() error {
 			return err
 		}
 	}
-	fmt.Println("You can type \":x\" at any time to save and exit.")
+	log.Output("You can type \":x\" at any time to save and exit.")
 	OptionalKeyQuestion := iq.QuestionsMap[OptionalKey]
 	OptionalKeyQuestion.Options = iq.OptionalKeysSuggests
 	for {
@@ -254,25 +254,6 @@ func GetBoolSuggests() []prompt.Suggest {
 		{Text: True},
 		{Text: False},
 	}
-}
-
-var BoolQuestionInfo = QuestionInfo{
-	Options:   GetBoolSuggests(),
-	AllowVars: true,
-	Writer:    WriteBoolAnswer,
-}
-
-var IntQuestionInfo = QuestionInfo{
-	Options:   nil,
-	AllowVars: true,
-	Writer:    WriteIntAnswer,
-}
-
-var StringListQuestionInfo = QuestionInfo{
-	Msg:       CommaSeparatedListMsg,
-	Options:   nil,
-	AllowVars: true,
-	Writer:    WriteStringArrayAnswer,
 }
 
 // Common writers
@@ -314,10 +295,10 @@ func WriteStringArrayAnswer(resultMap *map[string]interface{}, key, value string
 	return nil
 }
 
-func GetSuggestsFromKeys(keys []string, SuggestionMap map[string]prompt.Suggest) []prompt.Suggest {
+func GetSuggestsFromKeys(keys []string, suggestionMap map[string]prompt.Suggest) []prompt.Suggest {
 	var suggests []prompt.Suggest
 	for _, key := range keys {
-		suggests = append(suggests, SuggestionMap[key])
+		suggests = append(suggests, suggestionMap[key])
 	}
 	return suggests
 }
@@ -335,13 +316,23 @@ func OptionalKeyCallback(iq *InteractiveQuestionnaire, key string) (value string
 	if key != SaveAndExit {
 		valueQuestion := iq.QuestionsMap[key]
 		// Since we are using default question in most of the cases we set the map key here.
-		valueQuestion.MapKey = key
-		valueQuestion.PromptPrefix = InsertValuePromptMsg + key
-		if valueQuestion.Options != nil {
-			valueQuestion.PromptPrefix += PressTabMsg
+		if valueQuestion.MapKey == "" {
+			valueQuestion.MapKey = key
 		}
-		valueQuestion.PromptPrefix += " >"
+		editOptionalQuestionPromptPrefix(&valueQuestion, key)
 		value, err = iq.AskQuestion(valueQuestion)
 	}
 	return value, err
+}
+
+func editOptionalQuestionPromptPrefix(question *QuestionInfo, key string) {
+	if question.PromptPrefix == "" {
+		question.PromptPrefix = insertValuePromptMsg + key
+	}
+	if question.Options != nil {
+		question.PromptPrefix += PressTabMsg
+	}
+	if !strings.HasSuffix(question.PromptPrefix, " >") {
+		question.PromptPrefix += " >"
+	}
 }

@@ -1,26 +1,33 @@
 package dotnet
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
-	"net/url"
-	"os"
-	"path"
-	"path/filepath"
-	"strings"
-
+	"github.com/jfrog/build-info-go/build"
+	"github.com/jfrog/build-info-go/build/utils/dotnet"
 	"github.com/jfrog/gofrog/io"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils/dotnet"
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils/dotnet/solution"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-client-go/auth"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
+	"net/url"
+	"os"
+	"path"
+	"strings"
 )
 
-const SourceName = "JFrogCli"
+const (
+	SourceName        = "JFrogCli"
+	configFilePattern = "jfrog.cli.nuget."
+
+	dotnetTestError = `the command failed with an error.
+Note that JFrog CLI does not restore dependencies during a 'dotnet test' command, so if needed, run a preceding 'dotnet restore'.
+The initial error is:
+`
+	noRestoreFlag = "--no-restore"
+)
 
 type DotnetCommand struct {
 	toolchainType      dotnet.ToolchainType
@@ -28,7 +35,6 @@ type DotnetCommand struct {
 	argAndFlags        []string
 	repoName           string
 	solutionPath       string
-	useNugetAddSource  bool
 	useNugetV2         bool
 	buildConfiguration *utils.BuildConfiguration
 	serverDetails      *config.ServerDetails
@@ -74,13 +80,12 @@ func (dc *DotnetCommand) SetBasicCommand(subCommand string) *DotnetCommand {
 	return dc
 }
 
-func (dc *DotnetCommand) SetUseNugetAddSource(useNugetAddSource bool) *DotnetCommand {
-	dc.useNugetAddSource = useNugetAddSource
-	return dc
-}
-
 func (dc *DotnetCommand) ServerDetails() (*config.ServerDetails, error) {
 	return dc.serverDetails, nil
+}
+
+func (dc *DotnetCommand) GetToolchain() dotnet.ToolchainType {
+	return dc.toolchainType
 }
 
 func (dc *DotnetCommand) CommandName() string {
@@ -88,37 +93,8 @@ func (dc *DotnetCommand) CommandName() string {
 }
 
 // Exec all consume type nuget commands, install, update, add, restore.
-func (dc *DotnetCommand) Exec() error {
+func (dc *DotnetCommand) Exec() (err error) {
 	log.Info("Running " + dc.toolchainType.String() + "...")
-	// Use temp dir to save config file, so that config will be removed at the end.
-	tempDirPath, err := fileutils.CreateTempDir()
-	if err != nil {
-		return err
-	}
-	defer fileutils.RemoveTempDir(tempDirPath)
-
-	dc.solutionPath, err = changeWorkingDir(dc.solutionPath)
-	if err != nil {
-		return err
-	}
-
-	err = dc.prepareAndRunCmd(tempDirPath)
-	if err != nil {
-		return err
-	}
-	toCollect, err := dc.buildConfiguration.IsCollectBuildInfo()
-	if !toCollect || err != nil {
-		return err
-	}
-
-	slnFile, err := dc.updateSolutionPathAndGetFileName()
-	if err != nil {
-		return err
-	}
-	sol, err := solution.Load(dc.solutionPath, slnFile)
-	if err != nil {
-		return err
-	}
 	buildName, err := dc.buildConfiguration.GetBuildName()
 	if err != nil {
 		return err
@@ -127,55 +103,50 @@ func (dc *DotnetCommand) Exec() error {
 	if err != nil {
 		return err
 	}
-	if err = utils.SaveBuildGeneralDetails(buildName, buildNumber, dc.buildConfiguration.GetProject()); err != nil {
+
+	buildInfoService := utils.CreateBuildInfoService()
+	dotnetBuild, err := buildInfoService.GetOrCreateBuildWithProject(buildName, buildNumber, dc.buildConfiguration.GetProject())
+	if err != nil {
+		return errorutils.CheckError(err)
+	}
+	buildInfoModule, err := dotnetBuild.AddDotnetModules(dc.solutionPath)
+	if err != nil {
+		return errorutils.CheckError(err)
+	}
+	callbackFunc, err := dc.prepareDotnetBuildInfoModule(buildInfoModule)
+	if err != nil {
 		return err
 	}
-	buildInfo, err := sol.BuildInfo(dc.buildConfiguration.GetModule())
-	if err != nil {
+	defer func() {
+		if callbackFunc != nil {
+			e := callbackFunc()
+			if err == nil {
+				err = e
+			}
+		}
+	}()
+	if err = buildInfoModule.CalcDependencies(); err != nil {
+		if dc.isDotnetTestCommand() {
+			return errors.New(dotnetTestError + err.Error())
+		}
 		return err
 	}
-	return utils.SaveBuildInfo(buildName, buildNumber, dc.buildConfiguration.GetProject(), buildInfo)
+	log.Info(fmt.Sprintf("%s finished successfully.", dc.toolchainType))
+	return nil
 }
 
-func (dc *DotnetCommand) updateSolutionPathAndGetFileName() (string, error) {
-	// The path argument wasn't provided, sln file will be searched under working directory.
-	if len(dc.argAndFlags) == 0 || strings.HasPrefix(dc.argAndFlags[0], "-") {
-		return "", nil
-	}
-	cmdFirstArg := dc.argAndFlags[0]
-	exist, err := fileutils.IsDirExists(cmdFirstArg, false)
+// prepareDotnetBuildInfoModule prepare dotnet modules with the provided cli parameters.
+// In case no config file was provided - creates a temporary one.
+func (dc *DotnetCommand) prepareDotnetBuildInfoModule(buildInfoModule *build.DotnetModule) (func() error, error) {
+	callbackFunc, err := dc.prepareConfigFileIfNeeded()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// The path argument is a directory. sln/project file will be searched under this directory.
-	if exist {
-		dc.updateSolutionPath(cmdFirstArg)
-		return "", err
-	}
-	exist, err = fileutils.IsFileExists(cmdFirstArg, false)
-	if err != nil {
-		return "", err
-	}
-	if exist {
-		// The path argument is a .sln file.
-		if strings.HasSuffix(cmdFirstArg, ".sln") {
-			dc.updateSolutionPath(filepath.Dir(cmdFirstArg))
-			return filepath.Base(cmdFirstArg), nil
-		}
-		// The path argument is a .*proj/packages.config file.
-		if strings.HasSuffix(filepath.Ext(cmdFirstArg), "proj") || strings.HasSuffix(cmdFirstArg, "packages.config") {
-			dc.updateSolutionPath(filepath.Dir(cmdFirstArg))
-		}
-	}
-	return "", nil
-}
-
-func (dc *DotnetCommand) updateSolutionPath(slnRootPath string) {
-	if filepath.IsAbs(slnRootPath) {
-		dc.solutionPath = slnRootPath
-	} else {
-		dc.solutionPath = filepath.Join(dc.solutionPath, slnRootPath)
-	}
+	buildInfoModule.SetName(dc.buildConfiguration.GetModule())
+	buildInfoModule.SetSubcommand(dc.subCommand)
+	buildInfoModule.SetArgAndFlags(dc.argAndFlags)
+	buildInfoModule.SetToolchainType(dc.toolchainType)
+	return callbackFunc, nil
 }
 
 // Changes the working directory if provided.
@@ -189,97 +160,6 @@ func changeWorkingDir(newWorkingDir string) (string, error) {
 	}
 
 	return newWorkingDir, errorutils.CheckError(err)
-}
-
-// Prepares the nuget configuration file within the temp directory
-// Runs NuGet itself with the arguments and flags provided.
-func (dc *DotnetCommand) prepareAndRunCmd(configDirPath string) error {
-	cmd, err := dc.createCmd()
-	if err != nil {
-		return err
-	}
-	// To prevent NuGet prompting for credentials
-	err = os.Setenv("NUGET_EXE_NO_PROMPT", "true")
-	if err != nil {
-		return errorutils.CheckError(err)
-	}
-
-	err = dc.prepareConfigFile(cmd, configDirPath)
-	if err != nil {
-		return err
-	}
-	err = io.RunCmd(cmd)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Checks if the user provided input such as -configfile flag or -Source flag.
-// If those flags were provided, NuGet will use the provided configs (default config file or the one with -configfile)
-// If neither provided, we are initializing our own config.
-func (dc *DotnetCommand) prepareConfigFile(cmd *dotnet.Cmd, configDirPath string) error {
-	cmdFlag := cmd.GetToolchain().GetTypeFlagPrefix() + "configfile"
-	currentConfigPath, err := getFlagValueIfExists(cmdFlag, cmd)
-	if err != nil {
-		return err
-	}
-	if currentConfigPath != "" {
-		return nil
-	}
-
-	cmdFlag = cmd.GetToolchain().GetTypeFlagPrefix() + "source"
-	sourceCommandValue, err := getFlagValueIfExists(cmdFlag, cmd)
-	if err != nil {
-		return err
-	}
-	if sourceCommandValue != "" {
-		return nil
-	}
-
-	configFile, err := dc.InitNewConfig(configDirPath)
-	if err == nil {
-		cmd.CommandFlags = append(cmd.CommandFlags, cmd.GetToolchain().GetTypeFlagPrefix()+"configfile", configFile.Name())
-	}
-	return err
-}
-
-// Returns the value of the flag if exists
-func getFlagValueIfExists(cmdFlag string, cmd *dotnet.Cmd) (string, error) {
-	for i := 0; i < len(cmd.CommandFlags); i++ {
-		if !strings.EqualFold(cmd.CommandFlags[i], cmdFlag) {
-			continue
-		}
-		if i+1 == len(cmd.CommandFlags) {
-			return "", errorutils.CheckErrorf(cmdFlag, " flag was provided without value")
-		}
-		return cmd.CommandFlags[i+1], nil
-	}
-
-	return "", nil
-}
-
-// Got to here, means that neither of the flags provided and we need to init our own config.
-func (dc *DotnetCommand) InitNewConfig(configDirPath string) (configFile *os.File, err error) {
-	// Initializing a new NuGet config file that NuGet will use into a temp file
-	configFile, err = ioutil.TempFile(configDirPath, "jfrog.cli.nuget.")
-	if errorutils.CheckError(err) != nil {
-		return
-	}
-	log.Debug("Nuget config file created at:", configFile.Name())
-	defer func() {
-		e := configFile.Close()
-		if err == nil {
-			err = errorutils.CheckError(e)
-		}
-	}()
-
-	// We will prefer to write the NuGet configuration using the `nuget add source` command (addSourceToNugetConfig)
-	// Currently the NuGet configuration utility doesn't allow setting protocolVersion.
-	// Until that is supported, the templated method must be used.
-	err = dc.addSourceToNugetTemplate(configFile)
-	return
 }
 
 // Set Artifactory repo as source using the toolchain's `add source` command
@@ -310,20 +190,111 @@ func addSourceToNugetConfig(cmdType dotnet.ToolchainType, configFileName, source
 	cmd.CommandFlags = append(cmd.CommandFlags, flagPrefix+"username", user)
 	cmd.CommandFlags = append(cmd.CommandFlags, flagPrefix+"password", password)
 	output, err := io.RunCmdOutput(cmd)
-	log.Debug("Running command: Add sources. Output:", output)
+	log.Debug("'Add sources' command executed. Output:", output)
 	return err
 }
 
+// Checks if the user provided input such as -configfile flag or -Source flag.
+// If those flags were provided, NuGet will use the provided configs (default config file or the one with -configfile)
+// If neither provided, we are initializing our own config.
+func (dc *DotnetCommand) prepareConfigFileIfNeeded() (cleanup func() error, err error) {
+	dc.solutionPath, err = changeWorkingDir(dc.solutionPath)
+	if err != nil {
+		return
+	}
+
+	if dc.isDotnetTestCommand() {
+		// The dotnet test command does not support the configfile flag.
+		// To avoid resolving from a registry that is not Artifactory, we add the no-restore flag and require the user to run a restore before the test command.
+		dc.argAndFlags = append(dc.argAndFlags, noRestoreFlag)
+		return
+	}
+
+	cmdFlag := dc.GetToolchain().GetTypeFlagPrefix() + "configfile"
+	currentConfigPath, err := getFlagValueIfExists(cmdFlag, dc.argAndFlags)
+	if err != nil {
+		return
+	}
+	if currentConfigPath != "" {
+		return
+	}
+
+	cmdFlag = dc.GetToolchain().GetTypeFlagPrefix() + "source"
+	sourceCommandValue, err := getFlagValueIfExists(cmdFlag, dc.argAndFlags)
+	if err != nil {
+		return
+	}
+	if sourceCommandValue != "" {
+		return
+	}
+
+	// Use temp dir to save config file, so that config will be removed at the end.
+	tempDirPath, err := fileutils.CreateTempDir()
+	if err != nil {
+		return
+	}
+	cleanup = func() error {
+		return fileutils.RemoveTempDir(tempDirPath)
+	}
+
+	configFile, err := InitNewConfig(tempDirPath, dc.repoName, dc.serverDetails, dc.useNugetV2)
+	if err == nil {
+		dc.argAndFlags = append(dc.argAndFlags, dc.GetToolchain().GetTypeFlagPrefix()+"configfile", configFile.Name())
+	}
+	return
+}
+
+func (dc *DotnetCommand) isDotnetTestCommand() bool {
+	return dc.GetToolchain() == dotnet.DotnetCore && dc.subCommand == "test"
+}
+
+// Returns the value of the flag if exists
+func getFlagValueIfExists(cmdFlag string, argAndFlags []string) (string, error) {
+	for i := 0; i < len(argAndFlags); i++ {
+		if !strings.EqualFold(argAndFlags[i], cmdFlag) {
+			continue
+		}
+		if i+1 == len(argAndFlags) {
+			return "", errorutils.CheckErrorf(cmdFlag, " flag was provided without value")
+		}
+		return argAndFlags[i+1], nil
+	}
+
+	return "", nil
+}
+
+// InitNewConfig is used when neither of the flags were provided, and we need to init our own config.
+func InitNewConfig(configDirPath, repoName string, server *config.ServerDetails, useNugetV2 bool) (configFile *os.File, err error) {
+	// Initializing a new NuGet config file that NuGet will use into a temp file
+	configFile, err = os.CreateTemp(configDirPath, configFilePattern)
+	if errorutils.CheckError(err) != nil {
+		return
+	}
+	log.Debug("Nuget config file created at:", configFile.Name())
+	defer func() {
+		e := configFile.Close()
+		if err == nil {
+			err = errorutils.CheckError(e)
+		}
+	}()
+
+	// We would prefer to write the NuGet configuration using the `nuget add source` command,
+	// but the NuGet configuration utility doesn't currently allow setting protocolVersion.
+	// Until that is supported, the templated method must be used.
+	err = addSourceToNugetTemplate(configFile, server, useNugetV2, repoName)
+	return
+}
+
 // Adds a source to the nuget config template
-func (dc *DotnetCommand) addSourceToNugetTemplate(configFile *os.File) error {
-	sourceUrl, user, password, err := dc.getSourceDetails()
+func addSourceToNugetTemplate(configFile *os.File, server *config.ServerDetails, useNugetV2 bool, repoName string) error {
+	sourceUrl, user, password, err := getSourceDetails(server, repoName, useNugetV2)
 	if err != nil {
 		return err
 	}
 
 	// Specify the protocolVersion
 	protoVer := "3"
-	if dc.useNugetV2 {
+	if useNugetV2 {
 		protoVer = "2"
 	}
 
@@ -332,45 +303,28 @@ func (dc *DotnetCommand) addSourceToNugetTemplate(configFile *os.File) error {
 	return err
 }
 
-func (dc *DotnetCommand) getSourceDetails() (sourceURL, user, password string, err error) {
+func getSourceDetails(details *config.ServerDetails, repoName string, useNugetV2 bool) (sourceURL, user, password string, err error) {
 	var u *url.URL
-	u, err = url.Parse(dc.serverDetails.ArtifactoryUrl)
+	u, err = url.Parse(details.ArtifactoryUrl)
 	if errorutils.CheckError(err) != nil {
 		return
 	}
 	nugetApi := "api/nuget/v3"
-	if dc.useNugetV2 {
+	if useNugetV2 {
 		nugetApi = "api/nuget"
 	}
-	u.Path = path.Join(u.Path, nugetApi, dc.repoName)
+	u.Path = path.Join(u.Path, nugetApi, repoName)
 	sourceURL = u.String()
 
-	user = dc.serverDetails.User
-	password = dc.serverDetails.Password
+	user = details.User
+	password = details.Password
 	// If access-token is defined, extract user from it.
-	serverDetails, err := dc.ServerDetails()
-	if errorutils.CheckError(err) != nil {
-		return
-	}
-	if serverDetails.AccessToken != "" {
+	if details.AccessToken != "" {
 		log.Debug("Using access-token details for nuget authentication.")
-		user, err = auth.ExtractUsernameFromAccessToken(serverDetails.AccessToken)
-		if err != nil {
-			return
+		if user == "" {
+			user = auth.ExtractUsernameFromAccessToken(details.AccessToken)
 		}
-		password = serverDetails.AccessToken
+		password = details.AccessToken
 	}
 	return
-}
-
-func (dc *DotnetCommand) createCmd() (*dotnet.Cmd, error) {
-	c, err := dotnet.NewToolchainCmd(dc.toolchainType)
-	if err != nil {
-		return nil, err
-	}
-	if dc.subCommand != "" {
-		c.Command = append(c.Command, strings.Split(dc.subCommand, " ")...)
-	}
-	c.CommandFlags = dc.argAndFlags
-	return c, nil
 }

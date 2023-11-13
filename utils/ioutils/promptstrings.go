@@ -2,6 +2,7 @@ package ioutils
 
 import (
 	"bytes"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 	"io"
 	"os"
 	"strings"
@@ -11,13 +12,22 @@ import (
 	"github.com/manifoldco/promptui"
 )
 
-const (
-	// Example:
-	// JFrog Artifactory URL (http://localhost:8080/artifactory/)
-	promtItemTemplate = " {{ .Option | cyan }}{{if .TargetValue}}({{ .TargetValue }}){{end}}"
-	// Npm-remote ()
-	selectableItemTemplate = " {{ .Option | cyan }}{{if .DefaultValue}} <{{ .DefaultValue }}>{{end}}"
-)
+// Returns a template for prompt item line
+func promptItemTemplate() string {
+	// Example: JFrog Artifactory URL (http://localhost:8080/artifactory/)
+	if log.IsColorsSupported() {
+		return " {{ .Option | cyan }}{{if .TargetValue}}({{ .TargetValue }}){{end}}"
+	}
+	return " {{ .Option }}{{if .TargetValue}}({{ .TargetValue }}){{end}}"
+}
+
+// Returns a template for selection item line
+func selectableItemTemplate() string {
+	if log.IsColorsSupported() {
+		return " {{ .Option | cyan }}{{if .DefaultValue}} <{{ .DefaultValue }}>{{end}}"
+	}
+	return " {{ .Option }}{{if .DefaultValue}} <{{ .DefaultValue }}>{{end}}"
+}
 
 type PromptItem struct {
 	// The option string to show, i.e - JFrog Artifactory URL.
@@ -38,7 +48,7 @@ type PromptItem struct {
 // JFrog Pipelines URL ()
 func PromptStrings(items []PromptItem, label string, onSelect func(PromptItem)) error {
 	items = append([]PromptItem{{Option: "Save and continue"}}, items...)
-	prompt := createSelectableList(len(items), label, promtItemTemplate)
+	prompt := createSelectableList(len(items), label, promptItemTemplate())
 	for {
 		prompt.Items = items
 		i, _, err := prompt.Run()
@@ -53,9 +63,13 @@ func PromptStrings(items []PromptItem, label string, onSelect func(PromptItem)) 
 }
 
 func createSelectableList(numOfItems int, label, itemTemplate string) (prompt *promptui.Select) {
+	selectionIcon := "🐸"
+	if !log.IsColorsSupported() {
+		selectionIcon = ">"
+	}
 	templates := &promptui.SelectTemplates{
 		Label:    "{{ . }}",
-		Active:   "🐸" + itemTemplate,
+		Active:   selectionIcon + itemTemplate,
 		Inactive: "  " + itemTemplate,
 	}
 	return &promptui.Select{
@@ -67,15 +81,17 @@ func createSelectableList(numOfItems int, label, itemTemplate string) (prompt *p
 	}
 }
 
-func SelectString(items []PromptItem, label string, onSelect func(PromptItem)) error {
-	selectableList := createSelectableList(len(items), label, selectableItemTemplate)
+func SelectString(items []PromptItem, label string, needSearch bool, onSelect func(PromptItem)) error {
+	selectableList := createSelectableList(len(items), label, selectableItemTemplate())
 	selectableList.Items = items
-	selectableList.StartInSearchMode = true
-	selectableList.Searcher = func(input string, index int) bool {
-		if found := strings.Index(items[index].Option, input); found != -1 {
-			return true
+	if needSearch {
+		selectableList.StartInSearchMode = true
+		selectableList.Searcher = func(input string, index int) bool {
+			if found := strings.Index(strings.ToLower(items[index].Option), strings.ToLower(input)); found != -1 {
+				return true
+			}
+			return false
 		}
-		return false
 	}
 	i, _, err := selectableList.Run()
 	if err != nil {
@@ -85,8 +101,8 @@ func SelectString(items []PromptItem, label string, onSelect func(PromptItem)) e
 	return nil
 }
 
-// In MacOS, Terminal bell is ringing when trying to select items using up and down arrows.
-// Using bellSkipper as Stdout is a workaround for this issue.
+// On macOS the terminal's bell is ringing when trying to select items using the up and down arrows.
+// By using bellSkipper the issue is resolved.
 type bellSkipper struct{ io.WriteCloser }
 
 var charBell = []byte{readline.CharBell}

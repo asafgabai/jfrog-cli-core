@@ -2,7 +2,13 @@ package generic
 
 import (
 	"errors"
+
 	buildInfo "github.com/jfrog/build-info-go/entities"
+
+	"os"
+	"strconv"
+	"time"
+
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/common/spec"
 	"github.com/jfrog/jfrog-client-go/artifactory/services"
@@ -12,9 +18,6 @@ import (
 	ioUtils "github.com/jfrog/jfrog-client-go/utils/io"
 	"github.com/jfrog/jfrog-client-go/utils/io/content"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"os"
-	"strconv"
-	"time"
 )
 
 type UploadCommand struct {
@@ -79,15 +82,15 @@ func (uc *UploadCommand) upload() (err error) {
 	// Create Service Manager:
 	uc.uploadConfiguration.MinChecksumDeploySize, err = getMinChecksumDeploySize()
 	if err != nil {
-		return err
+		return
 	}
 	serverDetails, err := uc.ServerDetails()
 	if errorutils.CheckError(err) != nil {
-		return err
+		return
 	}
 	servicesManager, err := utils.CreateUploadServiceManager(serverDetails, uc.uploadConfiguration.Threads, uc.retries, uc.retryWaitTimeMilliSecs, uc.DryRun(), uc.progress)
 	if err != nil {
-		return err
+		return
 	}
 
 	addVcsProps := false
@@ -95,22 +98,11 @@ func (uc *UploadCommand) upload() (err error) {
 	// Build Info Collection:
 	toCollect, err := uc.buildConfiguration.IsCollectBuildInfo()
 	if err != nil {
-		return err
+		return
 	}
 	if toCollect && !uc.DryRun() {
 		addVcsProps = true
-		buildName, err := uc.buildConfiguration.GetBuildName()
-		if err != nil {
-			return err
-		}
-		buildNumber, err := uc.buildConfiguration.GetBuildNumber()
-		if err != nil {
-			return err
-		}
-		if err := utils.SaveBuildGeneralDetails(buildName, buildNumber, uc.buildConfiguration.GetProject()); err != nil {
-			return err
-		}
-		buildProps, err = utils.CreateBuildProperties(buildName, buildNumber, uc.buildConfiguration.GetProject())
+		buildProps, err = utils.CreateBuildPropsFromConfiguration(uc.buildConfiguration)
 		if err != nil {
 			return err
 		}
@@ -177,18 +169,18 @@ func (uc *UploadCommand) upload() (err error) {
 	uc.result.SetSuccessCount(successCount)
 	uc.result.SetFailCount(failCount)
 	if errorOccurred {
-		err = errors.New("upload finished with errors, Please review the logs")
-		return err
+		err = errors.New("upload finished with errors. Review the logs for more information")
+		return
 	}
 	if failCount > 0 {
-		return err
+		return
 	}
 
 	// Handle sync-deletes
 	if uc.syncDelete() {
 		err = uc.handleSyncDeletes(syncDeletesProp)
 		if err != nil {
-			return err
+			return
 		}
 	}
 
@@ -197,24 +189,11 @@ func (uc *UploadCommand) upload() (err error) {
 		var buildArtifacts []buildInfo.Artifact
 		buildArtifacts, err = rtServicesUtils.ConvertArtifactsDetailsToBuildInfoArtifacts(artifactsDetailsReader)
 		if err != nil {
-			return err
+			return
 		}
-		populateFunc := func(partial *buildInfo.Partial) {
-			partial.Artifacts = buildArtifacts
-			partial.ModuleId = uc.buildConfiguration.GetModule()
-			partial.ModuleType = buildInfo.Generic
-		}
-		buildName, err := uc.buildConfiguration.GetBuildName()
-		if err != nil {
-			return err
-		}
-		buildNumber, err := uc.buildConfiguration.GetBuildNumber()
-		if err != nil {
-			return err
-		}
-		return utils.SavePartialBuildInfo(buildName, buildNumber, uc.buildConfiguration.GetProject(), populateFunc)
+		return utils.PopulateBuildArtifactsAsPartials(buildArtifacts, uc.buildConfiguration, buildInfo.Generic)
 	}
-	return err
+	return
 }
 
 func getMinChecksumDeploySize() (int64, error) {

@@ -2,7 +2,10 @@ package python
 
 import (
 	"errors"
-	"fmt"
+	python "github.com/jfrog/jfrog-cli-core/v2/utils/python"
+	"io"
+	"os/exec"
+
 	"github.com/jfrog/build-info-go/build"
 	"github.com/jfrog/build-info-go/entities"
 	"github.com/jfrog/build-info-go/utils/pythonutils"
@@ -10,12 +13,8 @@ import (
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/python/dependencies"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
-	"github.com/jfrog/jfrog-client-go/auth"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"io"
-	"net/url"
-	"os/exec"
 )
 
 type PythonCommand struct {
@@ -31,11 +30,11 @@ func NewPythonCommand(pythonTool pythonutils.PythonTool) *PythonCommand {
 }
 
 func (pc *PythonCommand) Run() (err error) {
-	log.Info(fmt.Sprintf("Running %s %s.", string(pc.pythonTool), pc.commandName))
+	log.Info("Running", string(pc.pythonTool), pc.commandName)
 	var buildConfiguration *utils.BuildConfiguration
 	pc.args, buildConfiguration, err = utils.ExtractBuildDetailsFromArgs(pc.args)
 	if err != nil {
-		return err
+		return
 	}
 	pythonBuildInfo, err := utils.PrepareBuildPrerequisites(buildConfiguration)
 	if err != nil {
@@ -51,13 +50,16 @@ func (pc *PythonCommand) Run() (err error) {
 	}()
 	err = pc.SetPypiRepoUrlWithCredentials()
 	if err != nil {
-		return nil
+		return
 	}
 
 	if pythonBuildInfo != nil && pc.commandName == "install" {
 		// Need to collect build info
 		var pythonModule *build.PythonModule
 		pythonModule, err = pythonBuildInfo.AddPythonModule("", pc.pythonTool)
+		if err != nil {
+			return
+		}
 		if buildConfiguration.GetModule() != "" {
 			pythonModule.SetName(buildConfiguration.GetModule())
 		}
@@ -69,15 +71,9 @@ func (pc *PythonCommand) Run() (err error) {
 		pythonModule.SetLocalDependenciesPath(localDependenciesPath)
 		pythonModule.SetUpdateDepsChecksumInfoFunc(pc.UpdateDepsChecksumInfoFunc)
 		err = errorutils.CheckError(pythonModule.RunInstallAndCollectDependencies(pc.args))
-		if err != nil {
-			return
-		}
 	} else {
 		// Python native command
 		err = gofrogcmd.RunCmd(pc)
-		if err != nil {
-			return
-		}
 	}
 	return
 }
@@ -106,39 +102,12 @@ func (pc *PythonCommand) SetCommandName(commandName string) *PythonCommand {
 }
 
 func (pc *PythonCommand) SetPypiRepoUrlWithCredentials() error {
-	rtUrl, err := url.Parse(pc.serverDetails.GetArtifactoryUrl())
+	rtUrl, err := python.GetPypiRepoUrl(pc.serverDetails, pc.repository)
 	if err != nil {
-		return errorutils.CheckError(err)
+		return err
 	}
-
-	username := pc.serverDetails.GetUser()
-	password := pc.serverDetails.GetPassword()
-
-	// Get credentials from access-token if exists.
-	if pc.serverDetails.GetAccessToken() != "" {
-		username, err = auth.ExtractUsernameFromAccessToken(pc.serverDetails.GetAccessToken())
-		if err != nil {
-			return err
-		}
-		password = pc.serverDetails.GetAccessToken()
-	}
-
-	if username != "" && password != "" {
-		rtUrl.User = url.UserPassword(username, password)
-	}
-	rtUrl.Path += "api/pypi/" + pc.repository + "/simple"
-
-	if pc.pythonTool == pythonutils.Pip {
-		pc.args = append(pc.args, "-i")
-	} else if pc.pythonTool == pythonutils.Pipenv {
-		pc.args = append(pc.args, "--pypi-mirror")
-	}
-	pc.args = append(pc.args, rtUrl.String())
+	pc.args = append(pc.args, python.GetPypiRemoteRegistryFlag(pc.pythonTool), rtUrl)
 	return nil
-}
-
-func (pc *PythonCommand) CommandName() string {
-	return "rt_python_command"
 }
 
 func (pc *PythonCommand) SetServerDetails(serverDetails *config.ServerDetails) *PythonCommand {

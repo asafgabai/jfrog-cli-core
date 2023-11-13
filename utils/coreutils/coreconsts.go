@@ -10,20 +10,31 @@ const (
 	TokenRefreshDefaultInterval = 60
 
 	// Home Dir
-	JfrogCertsDirName        = "certs"
-	JfrogConfigFile          = "jfrog-cli.conf"
-	JfrogDependenciesDirName = "dependencies"
-	JfrogSecurityDirName     = "security"
-	JfrogSecurityConfFile    = "security.yaml"
-	JfrogBackupDirName       = "backup"
-	JfrogLogsDirName         = "logs"
-	JfrogLocksDirName        = "locks"
-	JfrogPluginsDirName      = "plugins"
-	PluginsExecDirName       = "bin"
-	PluginsResourcesDirName  = "resources"
-	JfrogPluginsFileName     = "plugins.yml"
+	JfrogBackupDirName                  = "backup"
+	JfrogCertsDirName                   = "certs"
+	JfrogConfigFile                     = "jfrog-cli.conf"
+	JfrogDependenciesDirName            = "dependencies"
+	JfrogLocksDirName                   = "locks"
+	JfrogLogsDirName                    = "logs"
+	JfrogPluginsDirName                 = "plugins"
+	JfrogPluginsFileName                = "plugins.yml"
+	JfrogSecurityConfFile               = "security.yaml"
+	JfrogSecurityDirName                = "security"
+	JfrogTransferDelaysDirName          = "delays"
+	JfrogTransferDirName                = "transfer"
+	JfrogTransferErrorsDirName          = "errors"
+	JfrogTransferRepoSnapshotFileName   = "repo-snapshot.json"
+	JfrogTransferRepoStateFileName      = "repo-state.json"
+	JfrogTransferRepositoriesDirName    = "repositories"
+	JfrogTransferRetryableErrorsDirName = "retryable"
+	JfrogTransferRunStatusFileName      = "run-status.json"
+	JfrogTransferSkippedErrorsDirName   = "skipped"
+	JfrogTransferSnapshotDirName        = "snapshot"
+	JfrogTransferStateFileName          = "state.json"
+	PluginsExecDirName                  = "bin"
+	PluginsResourcesDirName             = "resources"
 
-	// Env
+	//#nosec G101
 	ErrorHandling      = "JFROG_CLI_ERROR_HANDLING"
 	TempDir            = "JFROG_CLI_TEMP_DIR"
 	LogLevel           = "JFROG_CLI_LOG_LEVEL"
@@ -31,7 +42,9 @@ const (
 	ReportUsage        = "JFROG_CLI_REPORT_USAGE"
 	DependenciesDir    = "JFROG_CLI_DEPENDENCIES_DIR"
 	TransitiveDownload = "JFROG_CLI_TRANSITIVE_DOWNLOAD_EXPERIMENTAL"
+	FailNoOp           = "JFROG_CLI_FAIL_NO_OP"
 	CI                 = "CI"
+	ServerID           = "JFROG_CLI_SERVER_ID"
 )
 
 // Although these vars are constant, they are defined inside a vars section and not a constants section because the tests modify these values.
@@ -40,4 +53,6 @@ var (
 	BuildName   = "JFROG_CLI_BUILD_NAME"
 	BuildNumber = "JFROG_CLI_BUILD_NUMBER"
 	Project     = "JFROG_CLI_BUILD_PROJECT"
+	//#nosec G101
+	EncryptionKey = "JFROG_CLI_ENCRYPTION_KEY"
 )

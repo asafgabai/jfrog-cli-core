@@ -50,7 +50,8 @@ func (badc *BuildAddDependenciesCommand) ServerDetails() (*config.ServerDetails,
 
 func (badc *BuildAddDependenciesCommand) Run() error {
 	log.Info("Running Build Add Dependencies command...")
-	success, fail := 0, 0
+	var success int
+	var fail int
 	var err error
 	if !badc.dryRun {
 		buildName, err := badc.buildConfiguration.GetBuildName()
@@ -185,7 +186,7 @@ func (badc *BuildAddDependenciesCommand) readRemoteDependencies(reader *content.
 	count := 0
 	var buildInfoDependencies []buildinfo.Dependency
 	for resultItem := new(specutils.ResultItem); reader.NextRecord(resultItem) == nil; resultItem = new(specutils.ResultItem) {
-		buildInfoDependencies = append(buildInfoDependencies, convertSearchResultToDependency(*resultItem))
+		buildInfoDependencies = append(buildInfoDependencies, resultItem.ToDependency())
 		count++
 		if count > clientutils.MaxBufferSize {
 			if err = badc.savePartialBuildInfo(buildInfoDependencies); err != nil {
@@ -255,20 +256,20 @@ func getLocalDependencies(addDepsParams *specutils.CommonParams) ([]string, erro
 
 func collectPatternMatchingFiles(addDepsParams *specutils.CommonParams, rootPath string) ([]string, error) {
 	addDepsParams.SetPattern(clientutils.ConvertLocalPatternToRegexp(addDepsParams.Pattern, addDepsParams.GetPatternType()))
-	excludePathPattern := fspatterns.PrepareExcludePathPattern(addDepsParams)
+	excludePathPattern := fspatterns.PrepareExcludePathPattern(addDepsParams.Exclusions, addDepsParams.GetPatternType(), addDepsParams.IsRecursive())
 	patternRegex, err := regxp.Compile(addDepsParams.Pattern)
 	if errorutils.CheckError(err) != nil {
 		return nil, err
 	}
 
-	paths, err := fspatterns.GetPaths(rootPath, addDepsParams.IsRecursive(), addDepsParams.IsIncludeDirs(), true)
+	paths, err := fspatterns.ListFiles(rootPath, addDepsParams.IsRecursive(), addDepsParams.IsIncludeDirs(), false, true, excludePathPattern)
 	if err != nil {
 		return nil, err
 	}
 	result := []string{}
 
 	for _, path := range paths {
-		matches, _, _, err := fspatterns.PrepareAndFilterPaths(path, excludePathPattern, true, false, patternRegex)
+		matches, _, err := fspatterns.SearchPatterns(path, true, false, patternRegex)
 		if err != nil {
 			log.Error(err)
 			continue
@@ -285,6 +286,7 @@ func (badc *BuildAddDependenciesCommand) savePartialBuildInfo(dependencies []bui
 	populateFunc := func(partial *buildinfo.Partial) {
 		partial.ModuleType = buildinfo.Generic
 		partial.Dependencies = dependencies
+		partial.ModuleId = badc.buildConfiguration.GetModule()
 	}
 	buildName, err := badc.buildConfiguration.GetBuildName()
 	if err != nil {
@@ -308,12 +310,6 @@ func convertFileInfoToDependencies(files map[string]*fileutils.FileDetails) []bu
 		buildDependencies = append(buildDependencies, dependency)
 	}
 	return buildDependencies
-}
-
-func convertSearchResultToDependency(resultItem specutils.ResultItem) buildinfo.Dependency {
-	dependency := buildinfo.Dependency{Checksum: buildinfo.Checksum{Md5: resultItem.Actual_Md5, Sha1: resultItem.Actual_Sha1}}
-	dependency.Id = resultItem.Name
-	return dependency
 }
 
 func searchItems(spec *spec.SpecFiles, servicesManager artifactory.ArtifactoryServicesManager) (resultReader *content.ContentReader, err error) {

@@ -12,19 +12,12 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 	"io"
-	"io/ioutil"
 	"strconv"
 	"strings"
 )
 
 type aqlResult struct {
-	Results []*results `json:"results,omitempty"`
-}
-
-type results struct {
-	Name        string `json:"name,omitempty"`
-	Actual_md5  string `json:"actual_md5,omitempty"`
-	Actual_sha1 string `json:"actual_sha1,omitempty"`
+	Results []*servicesUtils.ResultItem `json:"results,omitempty"`
 }
 
 func GetDependenciesFromLatestBuild(servicesManager artifactory.ArtifactoryServicesManager, buildName string) (map[string]*entities.Dependency, error) {
@@ -67,7 +60,7 @@ func getDependencyInfo(name, ver string, previousBuildDependencies map[string]*e
 		}
 	}()
 	var result []byte
-	result, err = ioutil.ReadAll(stream)
+	result, err = io.ReadAll(stream)
 	if err != nil {
 		return
 	}
@@ -83,10 +76,10 @@ func getDependencyInfo(name, ver string, previousBuildDependencies map[string]*e
 		fileType = parsedResult.Results[0].Name[i+1:]
 	}
 	log.Debug(id, "was found in Artifactory. Name:", parsedResult.Results[0].Name,
-		"SHA-1:", parsedResult.Results[0].Actual_sha1,
-		"MD5:", parsedResult.Results[0].Actual_md5)
+		"SHA-1:", parsedResult.Results[0].Actual_Sha1,
+		"MD5:", parsedResult.Results[0].Actual_Md5)
 
-	checksum = entities.Checksum{Sha1: parsedResult.Results[0].Actual_sha1, Md5: parsedResult.Results[0].Actual_md5}
+	checksum = entities.Checksum{Sha1: parsedResult.Results[0].Actual_Sha1, Md5: parsedResult.Results[0].Actual_Md5, Sha256: parsedResult.Results[0].Sha256}
 	return
 }
 

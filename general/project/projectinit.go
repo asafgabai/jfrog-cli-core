@@ -1,7 +1,7 @@
 package project
 
 import (
-	"io/ioutil"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -13,7 +13,7 @@ import (
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -195,7 +195,7 @@ func (pic *ProjectInitCommand) createBuildConfig() error {
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-	return errorutils.CheckError(ioutil.WriteFile(configFilePath, resBytes, 0644))
+	return errorutils.CheckError(os.WriteFile(configFilePath, resBytes, 0644))
 }
 
 func createDefaultReposIfNeeded(tech coreutils.Technology, serverId string) error {
@@ -245,7 +245,7 @@ func createProjectBuildConfigs(tech coreutils.Technology, projectPath string, se
 		return errorutils.CheckError(err)
 	}
 
-	return errorutils.CheckError(ioutil.WriteFile(configFilePath, resBytes, 0644))
+	return errorutils.CheckError(os.WriteFile(configFilePath, resBytes, 0644))
 }
 
 func (pic *ProjectInitCommand) CommandName() string {

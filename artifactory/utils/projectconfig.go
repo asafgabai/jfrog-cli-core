@@ -2,22 +2,22 @@ package utils
 
 import (
 	"fmt"
-	"path/filepath"
-	"reflect"
-
-	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
-
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
+	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
+	xrayutils "github.com/jfrog/jfrog-cli-core/v2/xray/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 	"github.com/spf13/viper"
+	"path/filepath"
+	"reflect"
 )
 
 const (
 	ProjectConfigResolverPrefix = "resolver"
 	ProjectConfigDeployerPrefix = "deployer"
 	ProjectConfigRepo           = "repo"
+	ProjectConfigReleaseRepo    = "releaseRepo"
 	ProjectConfigServerId       = "serverId"
 )
 
@@ -27,6 +27,7 @@ const (
 	Go ProjectType = iota
 	Pip
 	Pipenv
+	Poetry
 	Npm
 	Yarn
 	Nuget
@@ -37,10 +38,16 @@ const (
 	Terraform
 )
 
+// Associates a technology with another of a different type in the structure.
+// Docker is not present, as there is no docker-config command and, consequently, no docker.yaml file we need to operate on.
+var techType = map[coreutils.Technology]ProjectType{coreutils.Maven: Maven, coreutils.Gradle: Gradle, coreutils.Npm: Npm, coreutils.Yarn: Yarn, coreutils.Go: Go, coreutils.Pip: Pip,
+	coreutils.Pipenv: Pipenv, coreutils.Poetry: Poetry, coreutils.Nuget: Nuget, coreutils.Dotnet: Dotnet}
+
 var ProjectTypes = []string{
 	"go",
 	"pip",
 	"pipenv",
+	"poetry",
 	"npm",
 	"yarn",
 	"nuget",
@@ -80,47 +87,67 @@ func GetProjectConfFilePath(projectType ProjectType) (confFilePath string, exist
 	confFileName := filepath.Join("projects", projectType.String()+".yaml")
 	projectDir, exists, err := fileutils.FindUpstream(".jfrog", fileutils.Dir)
 	if err != nil {
-		return "", false, err
+		return
 	}
 	if exists {
-		confFilePath = filepath.Join(projectDir, ".jfrog", confFileName)
-		exists, err = fileutils.IsFileExists(confFilePath, false)
+		filePath := filepath.Join(projectDir, ".jfrog", confFileName)
+		exists, err = fileutils.IsFileExists(filePath, false)
 		if err != nil {
-			return "", false, err
+			return
 		}
 
 		if exists {
+			confFilePath = filePath
 			return
 		}
 	}
 	// If missing in the root project, check in the home dir
 	jfrogHomeDir, err := coreutils.GetJfrogHomeDir()
 	if err != nil {
-		return "", exists, err
+		return
 	}
-	confFilePath = filepath.Join(jfrogHomeDir, confFileName)
-	exists, err = fileutils.IsFileExists(confFilePath, false)
+	filePath := filepath.Join(jfrogHomeDir, confFileName)
+	exists, err = fileutils.IsFileExists(filePath, false)
+	if exists {
+		confFilePath = filePath
+	}
 	return
 }
 
-func GetRepoConfigByPrefix(configFilePath, prefix string, vConfig *viper.Viper) (*RepositoryConfig, error) {
+func GetRepoConfigByPrefix(configFilePath, prefix string, vConfig *viper.Viper) (repoConfig *RepositoryConfig, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%s\nPlease run 'jf %s-config' with your %s repository information",
+				err.Error(),
+				vConfig.GetString("type"),
+				prefix,
+			)
+		}
+	}()
 	if !vConfig.IsSet(prefix) {
-		return nil, errorutils.CheckErrorf("%s information is missing within %s", prefix, configFilePath)
+		err = errorutils.CheckErrorf("the %s repository is missing from the config file (%s)", prefix, configFilePath)
+		return
 	}
 	log.Debug(fmt.Sprintf("Found %s in the config file %s", prefix, configFilePath))
 	repo := vConfig.GetString(prefix + "." + ProjectConfigRepo)
 	if repo == "" {
-		return nil, fmt.Errorf("missing repository for %s within %s", prefix, configFilePath)
+		// In the maven.yaml config, there's a resolver repository field named "releaseRepo"
+		if repo = vConfig.GetString(prefix + "." + ProjectConfigReleaseRepo); repo == "" {
+			err = errorutils.CheckErrorf("missing repository for %s within %s", prefix, configFilePath)
+			return
+		}
 	}
 	serverId := vConfig.GetString(prefix + "." + ProjectConfigServerId)
 	if serverId == "" {
-		return nil, fmt.Errorf("missing server ID for %s within %s", prefix, configFilePath)
+		err = errorutils.CheckErrorf("missing server ID for %s within %s", prefix, configFilePath)
+		return
 	}
 	rtDetails, err := config.GetSpecificConfig(serverId, false, true)
 	if err != nil {
-		return nil, err
+		return
 	}
-	return &RepositoryConfig{targetRepo: repo, serverDetails: rtDetails}, nil
+	repoConfig = &RepositoryConfig{targetRepo: repo, serverDetails: rtDetails}
+	return
 }
 
 func (repo *RepositoryConfig) IsServerDetailsEmpty() bool {
@@ -167,4 +194,28 @@ func ReadResolutionOnlyConfiguration(confFilePath string) (*RepositoryConfig, er
 		return nil, err
 	}
 	return GetRepoConfigByPrefix(confFilePath, ProjectConfigResolverPrefix, vConfig)
+}
+
+// Verifies the existence of depsRepo. If it doesn't exist, it searches for a configuration file based on the technology type. If found, it assigns depsRepo in the AuditParams.
+func SetResolutionRepoIfExists(params xrayutils.AuditParams, tech coreutils.Technology) (err error) {
+	if params.DepsRepo() != "" || params.IgnoreConfigFile() {
+		return
+	}
+	configFilePath, exists, err := GetProjectConfFilePath(techType[tech])
+	if err != nil {
+		err = fmt.Errorf("failed while searching for %s.yaml config file: %s", tech.String(), err.Error())
+		return
+	}
+	if !exists {
+		log.Debug(fmt.Sprintf("No %s.yaml configuration file was found. Resolving dependencies from %s default registry", tech.String(), tech.String()))
+		return
+	}
+
+	repoConfig, err := ReadResolutionOnlyConfiguration(configFilePath)
+	if err != nil {
+		err = fmt.Errorf("failed while reading %s.yaml config file: %s", tech.String(), err.Error())
+		return
+	}
+	params.SetDepsRepo(repoConfig.targetRepo)
+	return
 }

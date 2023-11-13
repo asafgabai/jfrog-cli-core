@@ -3,18 +3,17 @@ package ioutils
 import (
 	"bufio"
 	"fmt"
+	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
+	"github.com/jfrog/jfrog-client-go/utils/errorutils"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 	"golang.org/x/term"
-	"io"
 	"os"
 	"strings"
 	"syscall"
-
-	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
-	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 )
 
 // disallowUsingSavedPassword - Prevent changing username or url without changing the password.
-// False iff the user changed the username or the url.
+// False if the user changed the username or the url.
 func ReadCredentialsFromConsole(details, savedDetails coreutils.Credentials, disallowUsingSavedPassword bool) error {
 	if details.GetUser() == "" {
 		tempUser := ""
@@ -23,7 +22,7 @@ func ReadCredentialsFromConsole(details, savedDetails coreutils.Credentials, dis
 		disallowUsingSavedPassword = true
 	}
 	if details.GetPassword() == "" {
-		password, err := ScanPasswordFromConsole("JFrog password or API key: ")
+		password, err := ScanJFrogPasswordFromConsole()
 		if err != nil {
 			return err
 		}
@@ -32,27 +31,31 @@ func ReadCredentialsFromConsole(details, savedDetails coreutils.Credentials, dis
 			details.SetPassword(savedDetails.GetPassword())
 		}
 	}
+
 	return nil
 }
 
+func ScanJFrogPasswordFromConsole() (string, error) {
+	return ScanPasswordFromConsole("JFrog password or API key: ")
+}
+
 func ScanPasswordFromConsole(message string) (string, error) {
-	print(message)
-	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Print(coreutils.PrintLink(message))
+	bytePassword, err := term.ReadPassword(int(syscall.Stdin)) //nolint:unconvert
 	if err != nil {
 		return "", errorutils.CheckError(err)
 	}
 	// New-line required after the password input:
-	fmt.Println()
+	log.Output()
 	return string(bytePassword), nil
 }
 
 func ScanFromConsole(caption string, scanInto *string, defaultValue string) {
+	caption = coreutils.PrintLink(caption)
 	if defaultValue != "" {
-		print(caption + " [" + defaultValue + "]: ")
-	} else {
-		print(caption + ": ")
+		caption = caption + " [" + defaultValue + "]"
 	}
-
+	fmt.Print(caption + ": ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	*scanInto = scanner.Text()
@@ -62,44 +65,14 @@ func ScanFromConsole(caption string, scanInto *string, defaultValue string) {
 	*scanInto = strings.TrimSpace(*scanInto)
 }
 
-func CopyFile(src, dst string, fileMode os.FileMode) (err error) {
-	from, err := os.Open(src)
-	if err != nil {
-		return errorutils.CheckError(err)
-	}
-	defer func() {
-		e := from.Close()
-		if err == nil {
-			err = e
-		}
-	}()
-
-	to, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE, fileMode)
-	if err != nil {
-		return errorutils.CheckError(err)
-	}
-	defer func() {
-		e := to.Close()
-		if err == nil {
-			err = e
-		}
-	}()
-
-	if _, err = io.Copy(to, from); err != nil {
-		return errorutils.CheckError(err)
-	}
-
-	return errorutils.CheckError(os.Chmod(dst, fileMode))
-}
-
 func DoubleWinPathSeparator(filePath string) string {
-	return strings.Replace(filePath, "\\", "\\\\", -1)
+	return strings.ReplaceAll(filePath, "\\", "\\\\")
 }
 
 func UnixToWinPathSeparator(filePath string) string {
-	return strings.Replace(filePath, "/", "\\\\", -1)
+	return strings.ReplaceAll(filePath, "/", "\\\\")
 }
 
 func WinToUnixPathSeparator(filePath string) string {
-	return strings.Replace(filePath, "\\", "/", -1)
+	return strings.ReplaceAll(filePath, "\\", "/")
 }

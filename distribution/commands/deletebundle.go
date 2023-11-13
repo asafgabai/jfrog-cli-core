@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/jfrog/jfrog-client-go/utils/distribution"
 
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/common/spec"
@@ -11,14 +12,7 @@ import (
 	"github.com/jfrog/jfrog-client-go/distribution/services"
 	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
-)
-
-var (
-	defaultDeleteRules = spec.DistributionRules{
-		DistributionRules: []spec.DistributionRule{{
-			SiteName: "*",
-		}},
-	}
+	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 type DeleteReleaseBundleCommand struct {
@@ -107,9 +101,9 @@ func (db *DeleteReleaseBundleCommand) confirmDelete(distributionRulesEmpty bool)
 			"You can avoid this confirmation message by adding --quiet to the command.", false), nil
 	}
 
-	var distributionRulesBodies []services.DistributionRulesBody
+	var distributionRulesBodies []distribution.DistributionRulesBody
 	for _, rule := range db.deleteBundlesParams.DistributionRules {
-		distributionRulesBodies = append(distributionRulesBodies, services.DistributionRulesBody{
+		distributionRulesBodies = append(distributionRulesBodies, distribution.DistributionRulesBody{
 			SiteName:     rule.GetSiteName(),
 			CityName:     rule.GetCityName(),
 			CountryCodes: rule.GetCountryCodes(),
@@ -120,9 +114,9 @@ func (db *DeleteReleaseBundleCommand) confirmDelete(distributionRulesEmpty bool)
 		return false, errorutils.CheckError(err)
 	}
 
-	fmt.Println(clientutils.IndentJson(bytes))
+	log.Output(clientutils.IndentJson(bytes))
 	if db.deleteBundlesParams.DeleteFromDistribution {
-		fmt.Println("This command will also delete the release bundle locally from distribution.")
+		log.Output("This command will also delete the release bundle locally from distribution.")
 	}
 	return coreutils.AskYesNo(message+"with the above distribution rules?\n"+
 		"You can avoid this confirmation message by adding --quiet to the command.", false), nil

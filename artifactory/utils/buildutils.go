@@ -7,6 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/jfrog/build-info-go/build"
 	buildInfo "github.com/jfrog/build-info-go/entities"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
@@ -14,12 +20,6 @@ import (
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
 )
 
 const (
@@ -29,13 +29,13 @@ const (
 )
 
 func PrepareBuildPrerequisites(buildConfiguration *BuildConfiguration) (build *build.Build, err error) {
-	log.Debug("Preparing build prerequisites...")
 	// Prepare build-info.
 	toCollect, err := buildConfiguration.IsCollectBuildInfo()
 	if err != nil {
 		return
 	}
 	if toCollect {
+		log.Debug("Preparing build prerequisites...")
 		var buildName, buildNumber string
 		buildName, err = buildConfiguration.GetBuildName()
 		if err != nil {
@@ -107,7 +107,7 @@ func saveBuildData(action interface{}, buildName, buildNumber, projectKey string
 		return err
 	}
 	log.Debug("Creating temp build file at:", dirPath)
-	tempFile, err := ioutil.TempFile(dirPath, "temp")
+	tempFile, err := os.CreateTemp(dirPath, "temp")
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func SaveBuildInfo(buildName, buildNumber, projectKey string, buildInfo *buildIn
 		return err
 	}
 	log.Debug("Creating temp build file at: " + dirPath)
-	tempFile, err := ioutil.TempFile(dirPath, "temp")
+	tempFile, err := os.CreateTemp(dirPath, "temp")
 	if errorutils.CheckError(err) != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func SaveBuildGeneralDetails(buildName, buildNumber, projectKey string) error {
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-	err = ioutil.WriteFile(detailsFilePath, content.Bytes(), 0600)
+	err = os.WriteFile(detailsFilePath, content.Bytes(), 0600)
 	return errorutils.CheckError(err)
 }
 
@@ -343,12 +343,23 @@ func (bc *BuildConfiguration) GetBuildName() (string, error) {
 		return bc.buildName, nil
 	}
 	// Resolve from env var.
-	if envValue := os.Getenv(coreutils.BuildName); envValue != "" {
-		bc.buildName = envValue
+	if bc.buildName = os.Getenv(coreutils.BuildName); bc.buildName != "" {
 		return bc.buildName, nil
 	}
 	// Resolve from config file in '.jfrog' folder.
+	var err error
+	if bc.buildName, err = bc.getBuildNameFromConfigFile(); bc.buildName != "" {
+		bc.loadedFromConfigFile = true
+	}
+	return bc.buildName, err
+}
+
+func (bc *BuildConfiguration) getBuildNameFromConfigFile() (string, error) {
 	confFilePath, exist, err := GetProjectConfFilePath(Build)
+	if os.IsPermission(err) {
+		log.Debug("The 'build-name' cannot be read from JFrog config due to permission denied.")
+		return "", nil
+	}
 	if err != nil || !exist {
 		return "", err
 	}
@@ -356,10 +367,7 @@ func (bc *BuildConfiguration) GetBuildName() (string, error) {
 	if err != nil || vConfig == nil {
 		return "", err
 	}
-	if bc.buildName = vConfig.GetString(ProjectConfigBuildNameKey); bc.buildName != "" {
-		bc.loadedFromConfigFile = true
-	}
-	return bc.buildName, nil
+	return vConfig.GetString(ProjectConfigBuildNameKey), nil
 }
 
 func (bc *BuildConfiguration) GetBuildNumber() (string, error) {
@@ -396,7 +404,7 @@ func (bc *BuildConfiguration) GetModule() string {
 
 // Validates:
 // 1. If the build number exists, the build name also exists (and vice versa).
-// 2. If the modules exists, the build name/number are also exist (and vice versa).
+// 2. If the modules exist, the build name/number are also exist (and vice versa).
 func (bc *BuildConfiguration) ValidateBuildAndModuleParams() error {
 	buildName, err := bc.GetBuildName()
 	if err != nil {
@@ -412,7 +420,6 @@ func (bc *BuildConfiguration) ValidateBuildAndModuleParams() error {
 	}
 	if module != "" && buildName == "" && buildNumber == "" {
 		return errorutils.CheckErrorf("the build-name and build-number options are mandatory when the module option is provided.")
-
 	}
 	return nil
 }
@@ -450,4 +457,37 @@ func (bc *BuildConfiguration) IsCollectBuildInfo() (bool, error) {
 
 func (bc *BuildConfiguration) IsLoadedFromConfigFile() bool {
 	return bc.loadedFromConfigFile
+}
+
+func PopulateBuildArtifactsAsPartials(buildArtifacts []buildInfo.Artifact, buildConfiguration *BuildConfiguration, moduleType buildInfo.ModuleType) error {
+	populateFunc := func(partial *buildInfo.Partial) {
+		partial.Artifacts = buildArtifacts
+		partial.ModuleId = buildConfiguration.GetModule()
+		partial.ModuleType = moduleType
+	}
+	buildName, err := buildConfiguration.GetBuildName()
+	if err != nil {
+		return err
+	}
+	buildNumber, err := buildConfiguration.GetBuildNumber()
+	if err != nil {
+		return err
+	}
+	return SavePartialBuildInfo(buildName, buildNumber, buildConfiguration.GetProject(), populateFunc)
+}
+
+func CreateBuildPropsFromConfiguration(buildConfiguration *BuildConfiguration) (string, error) {
+	buildName, err := buildConfiguration.GetBuildName()
+	if err != nil {
+		return "", err
+	}
+	buildNumber, err := buildConfiguration.GetBuildNumber()
+	if err != nil {
+		return "", err
+	}
+	err = SaveBuildGeneralDetails(buildName, buildNumber, buildConfiguration.GetProject())
+	if err != nil {
+		return "", err
+	}
+	return CreateBuildProperties(buildName, buildNumber, buildConfiguration.GetProject())
 }

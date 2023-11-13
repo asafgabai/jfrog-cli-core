@@ -1,32 +1,35 @@
 package npm
 
 import (
-	"io"
-	"io/ioutil"
-
 	gofrogcmd "github.com/jfrog/gofrog/io"
 	npmutils "github.com/jfrog/jfrog-cli-core/v2/utils/npm"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
+	"io"
 )
 
 // This method runs "npm c ls" command and returns the current npm configuration (calculated by all flags and .npmrc files).
 // For more info see https://docs.npmjs.com/cli/config
-func GetConfigList(npmFlags []string, executablePath string) ([]byte, error) {
+func GetConfigList(npmFlags []string, executablePath string) (data []byte, err error) {
 	pipeReader, pipeWriter := io.Pipe()
-	defer pipeReader.Close()
+	defer func(pipeReader *io.PipeReader) {
+		e := pipeReader.Close()
+		if err == nil {
+			err = e
+		}
+	}(pipeReader)
 
 	npmFlags = append(npmFlags, "--json=false")
 	configListCmdConfig := createConfigListCmdConfig(executablePath, npmFlags, pipeWriter)
-	var npmError error
+	npmErrorChan := make(chan error, 1)
 	go func() {
-		npmError = gofrogcmd.RunCmd(configListCmdConfig)
+		npmErrorChan <- gofrogcmd.RunCmd(configListCmdConfig)
 	}()
 
-	data, err := ioutil.ReadAll(pipeReader)
+	data, err = io.ReadAll(pipeReader)
 	if err != nil {
 		return nil, errorutils.CheckError(err)
 	}
-
+	npmError := <-npmErrorChan
 	if npmError != nil {
 		return nil, errorutils.CheckError(npmError)
 	}

@@ -2,11 +2,11 @@ package plugins
 
 import (
 	"fmt"
+	biutils "github.com/jfrog/build-info-go/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
 	testsutils "github.com/jfrog/jfrog-client-go/utils/tests"
 	"github.com/stretchr/testify/assert"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,7 +89,7 @@ func setupPluginsTestingEnv(t *testing.T, pluginsDirName string) string {
 	assert.NoError(t, err)
 	wd, err := os.Getwd()
 	assert.NoError(t, err)
-	err = fileutils.CopyDir(filepath.Join(wd, "testdata", coreutils.JfrogPluginsDirName, pluginsDirName), filepath.Join(testHomeDir, coreutils.JfrogPluginsDirName), true, nil)
+	err = biutils.CopyDir(filepath.Join(wd, "testdata", coreutils.JfrogPluginsDirName, pluginsDirName), filepath.Join(testHomeDir, coreutils.JfrogPluginsDirName), true, nil)
 	assert.NoError(t, err)
 	err = coreutils.ChmodPluginsDirectoryContent()
 	assert.NoError(t, err)
@@ -98,7 +98,7 @@ func setupPluginsTestingEnv(t *testing.T, pluginsDirName string) string {
 
 // Set JFROG_CLI_HOME_DIR environment variable to be a new temp directory
 func createTempEnvForPluginsTests(t *testing.T) (cleanUp func()) {
-	tmpDir, err := ioutil.TempDir("", "plugins_test")
+	tmpDir, err := os.MkdirTemp("", "plugins_test")
 	assert.NoError(t, err)
 	oldHome := os.Getenv(coreutils.HomeDir)
 	testsutils.SetEnvAndAssert(t, coreutils.HomeDir, tmpDir)

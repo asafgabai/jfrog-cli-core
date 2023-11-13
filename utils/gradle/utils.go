@@ -1,10 +1,10 @@
 package gradleutils
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
-	"github.com/jfrog/build-info-go/build"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
@@ -17,7 +17,7 @@ const (
 	useWrapper = "usewrapper"
 )
 
-func RunGradle(tasks, configPath, deployableArtifactsFile string, configuration *utils.BuildConfiguration, threads int, useWrapperIfMissingConfig, disableDeploy bool) error {
+func RunGradle(vConfig *viper.Viper, tasks, deployableArtifactsFile string, configuration *utils.BuildConfiguration, threads int, disableDeploy bool) error {
 	buildInfoService := utils.CreateBuildInfoService()
 	buildName, err := configuration.GetBuildName()
 	if err != nil {
@@ -35,32 +35,27 @@ func RunGradle(tasks, configPath, deployableArtifactsFile string, configuration 
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-	props, wrapper, plugin, err := createGradleRunConfig(configPath, deployableArtifactsFile, configuration, threads, useWrapperIfMissingConfig, disableDeploy)
+	props, wrapper, plugin, err := createGradleRunConfig(vConfig, deployableArtifactsFile, threads, disableDeploy)
 	if err != nil {
 		return err
 	}
-	dependenciesPath, err := config.GetJfrogDependenciesPath()
+	dependencyLocalPath, err := getGradleDependencyLocalPath()
 	if err != nil {
 		return err
 	}
-	dependencyLocalPath := filepath.Join(dependenciesPath, "gradle", build.GradleExtractorDependencyVersion)
-	gradleModule.SetExtractorDetails(dependencyLocalPath, filepath.Join(coreutils.GetCliPersistentTempDirPath(), utils.PropertiesTempPath), strings.Split(tasks, " "), wrapper, plugin, utils.DownloadExtractorIfNeeded, props)
+	gradleModule.SetExtractorDetails(dependencyLocalPath, filepath.Join(coreutils.GetCliPersistentTempDirPath(), utils.PropertiesTempPath), strings.Split(tasks, " "), wrapper, plugin, utils.DownloadExtractor, props)
 	return coreutils.ConvertExitCodeError(gradleModule.CalcDependencies())
 }
 
-func createGradleRunConfig(configPath, deployableArtifactsFile string, buildConf *utils.BuildConfiguration, threads int, useWrapperIfMissingConfig, disableDeploy bool) (props map[string]string, wrapper, plugin bool, err error) {
-	var vConfig *viper.Viper
-	if configPath == "" {
-		vConfig = viper.New()
-		vConfig.SetConfigType(string(utils.YAML))
-		vConfig.Set("type", utils.Gradle.String())
-		vConfig.Set(useWrapper, useWrapperIfMissingConfig)
-	} else {
-		vConfig, err = utils.ReadConfigFile(configPath, utils.YAML)
-		if err != nil {
-			return
-		}
+func getGradleDependencyLocalPath() (string, error) {
+	dependenciesPath, err := config.GetJfrogDependenciesPath()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(dependenciesPath, "gradle"), nil
+}
+
+func createGradleRunConfig(vConfig *viper.Viper, deployableArtifactsFile string, threads int, disableDeploy bool) (props map[string]string, wrapper, plugin bool, err error) {
 	wrapper = vConfig.GetBool(useWrapper)
 	if threads > 0 {
 		vConfig.Set(utils.ForkCount, threads)
@@ -75,7 +70,7 @@ func createGradleRunConfig(configPath, deployableArtifactsFile string, buildConf
 	}
 	if deployableArtifactsFile != "" {
 		// Save the path to a temp file, where buildinfo project will write the deployable artifacts details.
-		props[utils.DeployableArtifacts] = vConfig.Get(utils.DeployableArtifacts).(string)
+		props[utils.DeployableArtifacts] = fmt.Sprint(vConfig.Get(utils.DeployableArtifacts))
 	}
 	plugin = vConfig.GetBool(usePlugin)
 	return

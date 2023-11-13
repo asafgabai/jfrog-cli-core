@@ -1,13 +1,16 @@
 package coreutils
 
 import (
+	"bufio"
 	"fmt"
-	"github.com/jedib0t/go-pretty/v6/table"
-	"golang.org/x/term"
 	"math"
 	"os"
 	"reflect"
 	"strings"
+
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jfrog/jfrog-client-go/utils/log"
+	"golang.org/x/term"
 )
 
 // Controls the max col width when printing to a non-terminal. See the PrintTable description for more info.
@@ -25,28 +28,30 @@ var DefaultMaxColWidth = 25
 // In case the struct you want to print contains a field that is a slice of other structs,
 // you can print it in the table too with the 'embed-table' tag which can be set on slices of structs only.
 // Fields with the 'extended' tag will be printed iff the 'printExtended' bool input is true.
+// You can merge cells horizontally with the 'auto-merge' tag, it will merge cells with the same value.
 //
 // Example:
 // These are the structs Customer and Product:
 //
-// type Customer struct {
-//     name     string    `col-name:"Name"`
-//     age      string    `col-name:"Age"`
-//     products []Product `embed-table:"true"`
-// }
+//	type Customer struct {
+//	    name     string    `col-name:"Name"`
+//	    age      string    `col-name:"Age"`
+//	    products []Product `embed-table:"true"`
+//	}
 //
-// type Product struct {
-//     title string `col-name:"Product Title"`
-//     CatNumber string `col-name:"Product\nCatalog #"`
-//     Color string `col-name:"Color" extended:"true"`
-// }
+//	type Product struct {
+//	    title string `col-name:"Product Title"`
+//	    CatNumber string `col-name:"Product\nCatalog #"`
+//	    Color string `col-name:"Color" extended:"true"`
+//	}
 //
 // We'll use it, and run these commands (var DefaultMaxColWidth = 25):
 //
-// customersSlice := []Customer{
-//     {name: "Gai", age: "350", products: []Product{{title: "SpiderFrog Shirt - Medium", CatNumber: "123456", Color: "Green"}, {title: "Floral Bottle", CatNumber: "147585", Color: "Blue"}}},
-//     {name: "Noah", age: "21", products: []Product{{title: "Pouch", CatNumber: "456789", Color: "Red"}, {title: "Ching Ching", CatNumber: "963852", Color: "Gold"}}},
-// }
+//	customersSlice := []Customer{
+//	    {name: "Gai", age: "350", products: []Product{{title: "SpiderFrog Shirt - Medium", CatNumber: "123456", Color: "Green"}, {title: "Floral Bottle", CatNumber: "147585", Color: "Blue"}}},
+//	    {name: "Noah", age: "21", products: []Product{{title: "Pouch", CatNumber: "456789", Color: "Red"}, {title: "Ching Ching", CatNumber: "963852", Color: "Gold"}}},
+//	}
+//
 // err := coreutils.PrintTable(customersSlice, "Customers", "No customers were found", false)
 //
 // That's the table printed:
@@ -87,23 +92,58 @@ var DefaultMaxColWidth = 25
 // ┌─────────────────────────┐
 // │ No customers were found │
 // └─────────────────────────┘
-func PrintTable(rows interface{}, title string, emptyTableMessage string, printExtended bool) error {
+//
+// Example(auto-merge):
+// These are the structs Customer:
+//
+//	type Customer struct {
+//	    name     string    `col-name:"Name" auto-merge:"true"`
+//	    age       string   `col-name:"Age" auto-merge:"true"`
+//	    title     string   `col-name:"Product Title" auto-merge:"true"`
+//	    CatNumber string   `col-name:"Product\nCatalog #" auto-merge:"true"`
+//	    Color     string   `col-name:"Color" extended:"true" auto-merge:"true"`
+//	}
+//
+//  customersSlice := []Customer{
+//	    {name: "Gai", age: "350", title: "SpiderFrog Shirt - Medium", CatNumber: "123456", Color: "Green"},
+//      {name: "Gai", age: "350", title: "Floral Bottle", CatNumber: "147585", Color: "Blue"},
+//	    {name: "Noah", age: "21", title: "Pouch", CatNumber: "456789", Color: "Red"},
+// }
+//
+// Customers
+// ┌──────┬─────┬───────────────────────────┬───────────┐
+// │ NAME │ AGE │ PRODUCT TITLE             │ PRODUCT   │
+// │      │     │                           │ CATALOG # │
+// ├──────┼─────┼───────────────────────────┼───────────┤
+// │ Gai  │ 350 │ SpiderFrog Shirt - Medium │ 123456    │
+// │      │     ├───────────────────────────┼───────────┤
+// │      │     │ Floral Bottle             │ 147585    │
+// ├──────┼─────┼───────────────────────────┼───────────┤
+// │ Noah │ 21  │ Pouch                     │ 456789    │
+// └──────┴─────┴───────────────────────────┴───────────┘
+
+func PrintTable(rows interface{}, title string, emptyTableMessage string, printExtended bool) (err error) {
+	if title != "" {
+		log.Output(title)
+	}
 	tableWriter, err := PrepareTable(rows, emptyTableMessage, printExtended)
 	if err != nil || tableWriter == nil {
-		return err
+		return
 	}
-
-	if title != "" {
-		fmt.Println(title)
-	}
-
-	if IsTerminal() {
+	if log.IsStdOutTerminal() || os.Getenv("GITLAB_CI") == "" {
 		tableWriter.SetStyle(table.StyleLight)
 	}
 	tableWriter.Style().Options.SeparateRows = true
-	tableWriter.SetOutputMirror(os.Stdout)
+	stdoutWriter := bufio.NewWriter(os.Stdout)
+	defer func() {
+		e := stdoutWriter.Flush()
+		if err == nil {
+			err = e
+		}
+	}()
+	tableWriter.SetOutputMirror(stdoutWriter)
 	tableWriter.Render()
-	return nil
+	return
 }
 
 // Creates table following the logic described in PrintTable.
@@ -129,17 +169,21 @@ func PrepareTable(rows interface{}, emptyTableMessage string, printExtended bool
 		columnName, columnNameExist := field.Tag.Lookup("col-name")
 		embedTable, embedTableExist := field.Tag.Lookup("embed-table")
 		extended, extendedExist := field.Tag.Lookup("extended")
+		_, autoMerge := field.Tag.Lookup("auto-merge")
+		_, omitEmptyColumn := field.Tag.Lookup("omitempty")
 		if !printExtended && extendedExist && extended == "true" {
 			continue
 		}
 		if !columnNameExist && !embedTableExist {
 			continue
 		}
-
+		if omitEmptyColumn && isColumnEmpty(rowsSliceValue, i) {
+			continue
+		}
 		if embedTable == "true" {
 			var subfieldsProperties []subfieldProperties
 			var err error
-			columnsNames, columnConfigs, subfieldsProperties, err = appendEmbeddedTableFields(columnsNames, columnConfigs, field, printExtended)
+			columnsNames, columnConfigs, subfieldsProperties = appendEmbeddedTableFields(columnsNames, columnConfigs, field, printExtended)
 			if err != nil {
 				return nil, err
 			}
@@ -147,7 +191,7 @@ func PrepareTable(rows interface{}, emptyTableMessage string, printExtended bool
 		} else {
 			columnsNames = append(columnsNames, columnName)
 			fieldsProperties = append(fieldsProperties, fieldProperties{index: i})
-			columnConfigs = append(columnConfigs, table.ColumnConfig{Name: columnName})
+			columnConfigs = append(columnConfigs, table.ColumnConfig{Name: columnName, AutoMerge: autoMerge})
 		}
 	}
 	tableWriter.AppendHeader(columnsNames)
@@ -174,6 +218,17 @@ func PrepareTable(rows interface{}, emptyTableMessage string, printExtended bool
 	return tableWriter, nil
 }
 
+func isColumnEmpty(rows reflect.Value, fieldIndex int) bool {
+	for i := 0; i < rows.Len(); i++ {
+		currRowValue := rows.Index(i)
+		currField := currRowValue.Field(fieldIndex)
+		if currField.String() != "" {
+			return false
+		}
+	}
+	return true
+}
+
 type fieldProperties struct {
 	index     int                  // The location of the field inside the row struct
 	subfields []subfieldProperties // If this field is an embedded table, this will contain the fields in it
@@ -188,7 +243,7 @@ func setColMaxWidth(columnConfigs []table.ColumnConfig, fieldsProperties []field
 	colMaxWidth := DefaultMaxColWidth
 
 	// If terminal, calculate the max width.
-	if IsTerminal() {
+	if log.IsStdOutTerminal() {
 		colNum := len(columnConfigs)
 		termWidth, err := getTerminalAllowedWidth(colNum)
 		if err != nil {
@@ -220,7 +275,7 @@ func getTerminalAllowedWidth(colNum int) (int, error) {
 	return width - subtraction, nil
 }
 
-func appendEmbeddedTableFields(columnsNames []interface{}, columnConfigs []table.ColumnConfig, field reflect.StructField, printExtended bool) ([]interface{}, []table.ColumnConfig, []subfieldProperties, error) {
+func appendEmbeddedTableFields(columnsNames []interface{}, columnConfigs []table.ColumnConfig, field reflect.StructField, printExtended bool) ([]interface{}, []table.ColumnConfig, []subfieldProperties) {
 	rowType := field.Type.Elem()
 	fieldsCount := rowType.NumField()
 	var subfieldsProperties []subfieldProperties
@@ -238,7 +293,7 @@ func appendEmbeddedTableFields(columnsNames []interface{}, columnConfigs []table
 		columnConfigs = append(columnConfigs, table.ColumnConfig{Name: columnName})
 		subfieldsProperties = append(subfieldsProperties, subfieldProperties{index: i})
 	}
-	return columnsNames, columnConfigs, subfieldsProperties, nil
+	return columnsNames, columnConfigs, subfieldsProperties
 }
 
 func appendEmbeddedTableStrings(rowValues []interface{}, fieldValue reflect.Value, subfieldsProperties []subfieldProperties) []interface{} {
@@ -317,9 +372,11 @@ type embeddedTableCell struct {
 func PrintMessage(message string) {
 	tableWriter := table.NewWriter()
 	tableWriter.SetOutputMirror(os.Stdout)
-	if IsTerminal() {
+	if log.IsStdOutTerminal() {
 		tableWriter.SetStyle(table.StyleLight)
 	}
+	// Remove emojis from non-supported terminals
+	message = RemoveEmojisIfNonSupportedTerminal(message)
 	tableWriter.AppendRow(table.Row{message})
 	tableWriter.Render()
 }

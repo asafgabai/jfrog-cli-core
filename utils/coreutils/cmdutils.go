@@ -1,6 +1,8 @@
 package coreutils
 
 import (
+	"github.com/forPelevin/gomoji"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 	"strconv"
 	"strings"
 
@@ -104,11 +106,12 @@ func FindBooleanFlag(flagName string, args []string) (flagIndex int, flagValue b
 	for flagIndex, arg = range args {
 		if strings.HasPrefix(arg, flagName) {
 			value := strings.TrimPrefix(arg, flagName)
-			if len(value) == 0 {
+			switch {
+			case len(value) == 0:
 				flagValue = true
-			} else if strings.HasPrefix(value, "=") {
+			case strings.HasPrefix(value, "="):
 				flagValue, err = strconv.ParseBool(value[1:])
-			} else {
+			default:
 				continue
 			}
 			return
@@ -117,7 +120,7 @@ func FindBooleanFlag(flagName string, args []string) (flagIndex int, flagValue b
 	return -1, false, nil
 }
 
-// Find the first match of any of the provided flags in args.
+// Find the first match of the provided flags in args.
 // Return same values as FindFlag.
 func FindFlagFirstMatch(flags, args []string) (flagIndex, flagValueIndex int, flagValue string, err error) {
 	// Look for provided flags.
@@ -155,7 +158,7 @@ func ExtractThreadsFromArgs(args []string, defaultValue int) (cleanArgs []string
 		return
 	}
 
-	RemoveFlagFromCommand(&args, flagIndex, valueIndex)
+	RemoveFlagFromCommand(&cleanArgs, flagIndex, valueIndex)
 	if numOfThreads != "" {
 		threads, err = strconv.Atoi(numOfThreads)
 		if err != nil {
@@ -274,30 +277,55 @@ func ExtractXrayOutputFormatFromArgs(args []string) (cleanArgs []string, format 
 	return
 }
 
-// Print the test to the console in green color.
+// Add green color style to the string if possible.
 func PrintTitle(str string) string {
 	return colorStr(str, color.Green)
 }
 
-// Print the test to the console in cyan color.
+// Add cyan color style to the string if possible.
 func PrintLink(str string) string {
 	return colorStr(str, color.Cyan)
 }
 
-// Print the test to the console with bold style.
+// Add bold style to the string if possible.
 func PrintBold(str string) string {
 	return colorStr(str, color.Bold)
 }
 
-// Print the test to the console in gray color.
+// Add bold and green style to the string if possible.
+func PrintBoldTitle(str string) string {
+	return PrintBold(PrintTitle(str))
+}
+
+// Add gray color style to the string if possible.
 func PrintComment(str string) string {
 	return colorStr(str, color.Gray)
 }
 
-// Print the test to the console with the specified color.
+// Add yellow color style to the string if possible.
+func PrintYellow(str string) string {
+	return colorStr(str, color.Yellow)
+}
+
+// Add the requested style to the string if possible.
 func colorStr(str string, c color.Color) string {
-	if IsTerminal() {
+	// Add styles only on supported terminals
+	if log.IsStdOutTerminal() && log.IsColorsSupported() {
 		return c.Render(str)
 	}
+	// Remove emojis from non-supported terminals
+	if gomoji.ContainsEmoji(str) {
+		str = gomoji.RemoveEmojis(str)
+	}
 	return str
+}
+
+// Remove emojis from non-supported terminals
+func RemoveEmojisIfNonSupportedTerminal(msg string) string {
+	if !(log.IsStdOutTerminal() && log.IsColorsSupported()) {
+		if gomoji.ContainsEmoji(msg) {
+			msg = gomoji.RemoveEmojis(msg)
+		}
+	}
+	return msg
 }

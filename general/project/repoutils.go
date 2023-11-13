@@ -109,7 +109,7 @@ func CreateDefaultLocalRepo(technologyType coreutils.Technology, serverId string
 		return err
 	}
 	params := services.NewLocalRepositoryBaseParams()
-	params.PackageType = coreutils.GetTechnologyPackageType(technologyType)
+	params.PackageType = technologyType.GetPackageType()
 	params.Key = RepoDefaultName[technologyType][Local]
 	// Check if default repository already exists
 	if exists, err := servicesManager.IsRepoExists(params.Key); exists {
@@ -139,7 +139,7 @@ func CreateDefaultRemoteRepo(technologyType coreutils.Technology, serverId strin
 		return err
 	}
 	params := services.NewRemoteRepositoryBaseParams()
-	params.PackageType = coreutils.GetTechnologyPackageType(technologyType)
+	params.PackageType = technologyType.GetPackageType()
 	params.Key = RepoDefaultName[technologyType][Remote]
 	params.Url = RepoDefaultName[technologyType][RemoteUrl]
 	// Check if default repository already exists
@@ -149,7 +149,7 @@ func CreateDefaultRemoteRepo(technologyType coreutils.Technology, serverId strin
 	if err != nil {
 		return err
 	}
-	// NuGet specifc case, due to required DownloadContextPath param by Artifactory
+	// NuGet specific case, due to required DownloadContextPath param by Artifactory
 	if technologyType == coreutils.Nuget || technologyType == coreutils.Dotnet {
 		return createDefaultRemoteNugetRepo(serverId, params)
 	}
@@ -162,7 +162,7 @@ func CreateDefaultVirtualRepo(technologyType coreutils.Technology, serverId stri
 		return err
 	}
 	params := services.NewVirtualRepositoryBaseParams()
-	params.PackageType = coreutils.GetTechnologyPackageType(technologyType)
+	params.PackageType = technologyType.GetPackageType()
 	params.Key = RepoDefaultName[technologyType][Virtual]
 	params.Repositories = []string{RepoDefaultName[technologyType][Local], RepoDefaultName[technologyType][Remote]}
 	params.DefaultDeploymentRepo = RepoDefaultName[technologyType][Local]

@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +31,7 @@ import (
 const packDestinationNpmMinVersion = "7.18.0"
 
 type NpmPublishCommandArgs struct {
-	NpmCommand
+	CommonArgs
 	executablePath         string
 	workingDirectory       string
 	collectBuildInfo       bool
@@ -384,7 +383,7 @@ func (npc *NpmPublishCommand) setPackageInfo() error {
 	}
 
 	if fileInfo.IsDir() {
-		npc.packageInfo, err = biutils.ReadPackageInfoFromPackageJson(npc.publishPath, npc.npmVersion)
+		npc.packageInfo, err = biutils.ReadPackageInfoFromPackageJsonIfExists(npc.publishPath, npc.npmVersion)
 		return err
 	}
 	log.Debug("The provided path is not a directory, we assume this is a compressed npm package")
@@ -420,7 +419,7 @@ func (npc *NpmPublishCommand) readPackageInfoFromTarball() (err error) {
 			return errorutils.CheckError(err)
 		}
 		if hdr.Name == "package/package.json" {
-			packageJson, err := ioutil.ReadAll(tarReader)
+			packageJson, err := io.ReadAll(tarReader)
 			if err != nil {
 				return errorutils.CheckError(err)
 			}

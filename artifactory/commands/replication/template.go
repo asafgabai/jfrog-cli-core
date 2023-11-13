@@ -3,7 +3,7 @@ package replication
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/commands/utils"
@@ -37,6 +37,7 @@ const (
 	PathPrefix               = "pathPrefix"
 	IncludePathPrefixPattern = "includePathPrefixPattern"
 	SocketTimeoutMillis      = "socketTimeoutMillis"
+	DisableProxy             = "disableProxy"
 )
 
 type ReplicationTemplateCommand struct {
@@ -84,7 +85,7 @@ func (rtc *ReplicationTemplateCommand) Run() (err error) {
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-	if err = ioutil.WriteFile(rtc.path, resBytes, 0644); err != nil {
+	if err = os.WriteFile(rtc.path, resBytes, 0644); err != nil {
 		return errorutils.CheckError(err)
 	}
 	log.Info(fmt.Sprintf("Replication creation config template successfully created at %s.", rtc.path))
@@ -218,4 +219,5 @@ var suggestionMap = map[string]prompt.Suggest{
 	PathPrefix:               {Text: PathPrefix},
 	IncludePathPrefixPattern: {Text: IncludePathPrefixPattern},
 	SocketTimeoutMillis:      {Text: SocketTimeoutMillis},
+	DisableProxy:             {Text: DisableProxy},
 }

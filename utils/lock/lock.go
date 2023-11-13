@@ -3,15 +3,16 @@ package lock
 import (
 	"errors"
 	"fmt"
-	"github.com/jfrog/jfrog-client-go/utils/errorutils"
-	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
-	"github.com/jfrog/jfrog-client-go/utils/log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jfrog/jfrog-client-go/utils/errorutils"
+	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 type Lock struct {
@@ -43,20 +44,21 @@ func (lock *Lock) createNewLockFile(lockDirPath string) error {
 	if err != nil {
 		return err
 	}
-	pid := os.Getpid()
-	lock.pid = pid
-	return lock.createFile(lockDirPath, pid)
+	lock.pid = os.Getpid()
+	return lock.createFile(lockDirPath)
 }
 
-func (lock *Lock) createFile(folderName string, pid int) error {
+func (lock *Lock) getLockFilename(folderName string) string {
+	return filepath.Join(folderName, "jfrog-cli.conf.lck."+strconv.Itoa(lock.pid)+"."+strconv.FormatInt(lock.currentTime, 10))
+}
+
+func (lock *Lock) createFile(folderName string) error {
 	// We are creating an empty file with the pid and current time part of the name
-	lock.fileName = filepath.Join(folderName, "jfrog-cli.conf.lck."+strconv.Itoa(pid)+"."+strconv.FormatInt(lock.currentTime, 10))
-	log.Debug("Creating lock file: ", lock.fileName)
+	lock.fileName = lock.getLockFilename(folderName)
 	file, err := os.OpenFile(lock.fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return errorutils.CheckError(err)
 	}
-
 	if err = file.Close(); err != nil {
 		return errorutils.CheckError(err)
 	}
@@ -78,14 +80,14 @@ func (lock *Lock) lock() error {
 			return nil
 		}
 
-		locks, err := lock.getLocks(filesList)
+		locks, err := getLocks(filesList)
 		if err != nil {
 			return err
 		}
 		// If the first timestamp in the sorted locks slice is equal to this timestamp
 		// means that the lock can be acquired
 		if locks[0].currentTime == lock.currentTime {
-			// Edge case, if at the same time (by the nano seconds) two different process created two files.
+			// Edge case, if at the same time (by the nanoseconds) two different process created two files.
 			// We are checking the PID to know which process can run.
 			if locks[0].pid != lock.pid {
 				err := lock.removeOtherLockOrWait(locks[0], &filesList)
@@ -159,7 +161,7 @@ func (lock *Lock) getListOfFiles() ([]string, error) {
 }
 
 // Returns a list of all available locks.
-func (lock *Lock) getLocks(filesList []string) (Locks, error) {
+func getLocks(filesList []string) (Locks, error) {
 	// Slice of all the timestamps that currently the lock directory has
 	var files Locks
 	for _, path := range filesList {
@@ -191,7 +193,7 @@ func (lock *Lock) getLocks(filesList []string) (Locks, error) {
 
 // Removes the lock file so other process can continue.
 func (lock *Lock) Unlock() error {
-	log.Debug("Releasing lock: ", lock.fileName)
+	log.Debug("Releasing lock:", lock.fileName)
 	exists, err := fileutils.IsFileExists(lock.fileName, false)
 	if err != nil {
 		return err
@@ -206,18 +208,46 @@ func (lock *Lock) Unlock() error {
 	return nil
 }
 
-func CreateLock(lockDirPath string) (Lock, error) {
+func CreateLock(lockDirPath string) (unlock func() error, err error) {
+	log.Debug("Creating lock in:", lockDirPath)
 	lockFile := new(Lock)
-	err := lockFile.createNewLockFile(lockDirPath)
-
+	unlock = func() error { return lockFile.Unlock() }
+	err = lockFile.createNewLockFile(lockDirPath)
 	if err != nil {
-		return *lockFile, err
+		return
 	}
 
 	// Trying to acquire a lock for the running process.
 	err = lockFile.lock()
 	if err != nil {
-		return *lockFile, errorutils.CheckError(err)
+		err = errorutils.CheckError(err)
 	}
-	return *lockFile, nil
+	return
+}
+
+func GetLastLockTimestamp(lockDirPath string) (int64, error) {
+	filesList, err := fileutils.ListFiles(lockDirPath, false)
+	if err != nil {
+		return 0, err
+	}
+	if len(filesList) == 0 {
+		return 0, nil
+	}
+	locks, err := getLocks(filesList)
+	if err != nil || len(locks) == 0 {
+		return 0, err
+	}
+
+	lastLock := locks[len(locks)-1]
+
+	// If the lock isn't acquired by a running process, an unexpected error was occurred.
+	running, err := isProcessRunning(lastLock.pid)
+	if err != nil {
+		return 0, err
+	}
+	if !running {
+		return 0, nil
+	}
+
+	return lastLock.currentTime, nil
 }

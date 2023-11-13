@@ -1,14 +1,21 @@
 package dotnet
 
 import (
-	"github.com/jfrog/gofrog/io"
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils/dotnet"
-	testsutils "github.com/jfrog/jfrog-client-go/utils/tests"
-	"github.com/stretchr/testify/assert"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/jfrog/build-info-go/build"
+	"github.com/jfrog/build-info-go/build/utils/dotnet"
+	"github.com/jfrog/gofrog/io"
+	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
+	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
+	"github.com/jfrog/jfrog-client-go/utils/io/fileutils"
+	testsutils "github.com/jfrog/jfrog-client-go/utils/tests"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGetFlagValueExists(t *testing.T) {
@@ -41,53 +48,177 @@ func TestGetFlagValueExists(t *testing.T) {
 				}
 				defer testsutils.RemoveAndAssert(t, test.currentConfigPath)
 			}
-			c := &dotnet.Cmd{CommandFlags: test.cmdFlags}
-			_, err := getFlagValueIfExists("-configfile", c)
+			_, err := getFlagValueIfExists("-configfile", test.cmdFlags)
 			if err != nil && !test.expectErr {
 				t.Error(err)
 			}
 			if err == nil && test.expectErr {
 				t.Errorf("Expecting: error, Got: nil")
 			}
-			if !reflect.DeepEqual(c.CommandFlags, test.expectedCmdFlags) {
-				t.Errorf("Expecting: %s, Got: %s", test.expectedCmdFlags, c.CommandFlags)
+			if !reflect.DeepEqual(test.cmdFlags, test.expectedCmdFlags) {
+				t.Errorf("Expecting: %s, Got: %s", test.expectedCmdFlags, test.cmdFlags)
 			}
 		})
 	}
 }
 
-func TestUpdateSolutionPathAndGetFileName(t *testing.T) {
-	workingDir, err := os.Getwd()
+func TestInitNewConfig(t *testing.T) {
+	tmpDir, err := fileutils.CreateTempDir()
 	assert.NoError(t, err)
-	tests := []struct {
-		name                 string
-		flags                []string
-		solutionPath         string
-		expectedSlnFile      string
-		expectedSolutionPath string
-	}{
-		{"emptyFlags", []string{}, workingDir, "", workingDir},
-		{"justFlags", []string{"-flag1", "value1", "-flag2", "value2"}, workingDir, "", workingDir},
-		{"relFileArgRelPath1", []string{filepath.Join("testdata", "slnDir", "sol.sln")}, filepath.Join("rel", "path"), "sol.sln", filepath.Join("rel", "path", "testdata", "slnDir")},
-		{"relDirArgRelPath2", []string{filepath.Join("testdata", "slnDir")}, filepath.Join("rel", "path"), "", filepath.Join("rel", "path", "testdata", "slnDir")},
-		{"absFileArgRelPath1", []string{filepath.Join(workingDir, "testdata", "slnDir", "sol.sln")}, filepath.Join(".", "rel", "path"), "sol.sln", filepath.Join(workingDir, "testdata", "slnDir")},
-		{"absDirArgRelPath2", []string{filepath.Join(workingDir, "testdata", "slnDir"), "-flag", "value"}, filepath.Join(".", "rel", "path"), "", filepath.Join(workingDir, "testdata", "slnDir")},
-		{"nonExistingFile", []string{filepath.Join(".", "dir1", "sol.sln")}, workingDir, "", workingDir},
-		{"nonExistingPath", []string{filepath.Join(workingDir, "non", "existing", "path")}, workingDir, "", workingDir},
-		{"relCsprojFile", []string{filepath.Join("testdata", "slnDir", "proj.csproj")}, filepath.Join("rel", "path"), "", filepath.Join("rel", "path", "testdata", "slnDir")},
-		{"relVbprojFile", []string{filepath.Join("testdata", "slnDir", "projTwo.vbproj")}, filepath.Join("rel", "path"), "", filepath.Join("rel", "path", "testdata", "slnDir")},
-		{"absCsprojFile", []string{filepath.Join(workingDir, "testdata", "slnDir", "proj.csproj")}, filepath.Join("rel", "path"), "", filepath.Join(workingDir, "testdata", "slnDir")},
-		{"absVbprojFile", []string{filepath.Join(workingDir, "testdata", "slnDir", "projTwo.vbproj")}, filepath.Join("rel", "path"), "", filepath.Join(workingDir, "testdata", "slnDir")},
-		{"relPackagesConfigFile", []string{filepath.Join("testdata", "slnDir", "packages.config")}, filepath.Join("rel", "path"), "", filepath.Join("rel", "path", "testdata", "slnDir")},
-		{"absPackagesConfigFile", []string{filepath.Join(workingDir, "testdata", "slnDir", "packages.config")}, filepath.Join("rel", "path"), "", filepath.Join(workingDir, "testdata", "slnDir")},
+	defer func() {
+		assert.NoError(t, fileutils.RemoveTempDir(tmpDir))
+	}()
+	repoName := "test-repo"
+	server := &config.ServerDetails{
+		ArtifactoryUrl: "https://server.com/artifactory",
+		User:           "user",
+		Password:       "pass",
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			dc := DotnetCommand{solutionPath: test.solutionPath, argAndFlags: test.flags}
-			slnFile, err := dc.updateSolutionPathAndGetFileName()
-			assert.NoError(t, err)
-			assert.Equal(t, test.expectedSlnFile, slnFile)
-			assert.Equal(t, test.expectedSolutionPath, dc.solutionPath)
-		})
+	configFile, err := InitNewConfig(tmpDir, repoName, server, false)
+	assert.NoError(t, err)
+	f, err := os.Open(configFile.Name())
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, f.Close())
+	}()
+	buf := make([]byte, 1024)
+	n, err := f.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="JFrogCli" value="https://server.com/artifactory/api/nuget/v3/test-repo" protocolVersion="3" />
+  </packageSources>
+  <packageSourceCredentials>
+    <JFrogCli>
+      <add key="Username" value="user" />
+      <add key="ClearTextPassword" value="pass" />
+    </JFrogCli>
+  </packageSourceCredentials>
+</configuration>`, string(buf[:n]))
+	server.Password = ""
+	server.AccessToken = "abc123"
+	configFile, err = InitNewConfig(tmpDir, repoName, server, true)
+	assert.NoError(t, err)
+	updatedConfigFile, err := os.Open(configFile.Name())
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, updatedConfigFile.Close())
+	}()
+	buf = make([]byte, 1024)
+	n, err = updatedConfigFile.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="JFrogCli" value="https://server.com/artifactory/api/nuget/test-repo" protocolVersion="2" />
+  </packageSources>
+  <packageSourceCredentials>
+    <JFrogCli>
+      <add key="Username" value="user" />
+      <add key="ClearTextPassword" value="abc123" />
+    </JFrogCli>
+  </packageSourceCredentials>
+</configuration>`, string(buf[:n]))
+}
+
+func TestGetSourceDetails(t *testing.T) {
+	server := &config.ServerDetails{
+		ArtifactoryUrl: "https://server.com/artifactory",
+		User:           "user",
+		Password:       "pass",
 	}
+	repoName := "repo-name"
+	url, user, pass, err := getSourceDetails(server, repoName, false)
+	assert.NoError(t, err)
+	assert.Equal(t, "user", user)
+	assert.Equal(t, "pass", pass)
+	assert.Equal(t, "https://server.com/artifactory/api/nuget/v3/repo-name", url)
+	server.Password = ""
+	server.AccessToken = "abc123"
+	url, user, pass, err = getSourceDetails(server, repoName, true)
+	assert.Equal(t, "user", user)
+	assert.Equal(t, "abc123", pass)
+	assert.NoError(t, err)
+	assert.Equal(t, "https://server.com/artifactory/api/nuget/repo-name", url)
+}
+
+func TestPrepareDotnetBuildInfoModule(t *testing.T) {
+	t.Run("generated config file", func(t *testing.T) { testPrepareDotnetBuildInfoModule(t, "restore", []string{}, true) })
+	t.Run("existing with configfile flag", func(t *testing.T) {
+		testPrepareDotnetBuildInfoModule(t, "restore", []string{"--configfile", "/path/to/config/file"}, false)
+	})
+	t.Run("existing with source flag", func(t *testing.T) {
+		testPrepareDotnetBuildInfoModule(t, "restore", []string{"--source", "/path/to/source"}, false)
+	})
+	t.Run("dotnet test", func(t *testing.T) {
+		testPrepareDotnetBuildInfoModule(t, "test", []string{}, false)
+	})
+}
+
+func testPrepareDotnetBuildInfoModule(t *testing.T, subCommand string, flags []string, expectedGeneratedConfigFile bool) {
+	tmpDir, err := fileutils.CreateTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, fileutils.RemoveTempDir(tmpDir))
+	}()
+	module := createNewDotnetModule(t, tmpDir)
+	cmd := DotnetCommand{
+		toolchainType:      dotnet.DotnetCore,
+		subCommand:         subCommand,
+		argAndFlags:        flags,
+		buildConfiguration: utils.NewBuildConfiguration("", "", "mod", ""),
+		serverDetails:      &config.ServerDetails{ArtifactoryUrl: "https://my-instance.jfrog.io"},
+	}
+	callbackFunc, err := cmd.prepareDotnetBuildInfoModule(module)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.Equal(t, cmd.toolchainType, module.GetToolchainType())
+	assert.Equal(t, cmd.subCommand, module.GetSubcommand())
+	assert.Equal(t, cmd.buildConfiguration.GetModule(), module.GetName())
+
+	if !expectedGeneratedConfigFile {
+		assertConfigFileNotGenerated(t, cmd, module, tmpDir)
+		return
+	}
+	assertConfigFileGenerated(t, module, callbackFunc)
+}
+
+func assertConfigFileNotGenerated(t *testing.T, cmd DotnetCommand, module *build.DotnetModule, tmpDir string) {
+	assert.Equal(t, cmd.argAndFlags, module.GetArgAndFlags())
+	if cmd.subCommand == "test" {
+		assert.True(t, cmd.isDotnetTestCommand())
+		assert.Contains(t, cmd.argAndFlags, noRestoreFlag)
+	}
+	// Temp dir should remain empty if config file was not generated.
+	contents, err := os.ReadDir(tmpDir)
+	assert.NoError(t, err)
+	assert.Empty(t, contents)
+}
+
+func assertConfigFileGenerated(t *testing.T, module *build.DotnetModule, callbackFunc func() error) {
+	// Assert config file was generated and added to the flags passed to the module.
+	assert.Len(t, module.GetArgAndFlags(), 2)
+	configFilePath, err := getFlagValueIfExists("--configfile", module.GetArgAndFlags())
+	assert.NoError(t, err)
+	assertFileExists(t, configFilePath, true)
+	assert.True(t, strings.HasPrefix(filepath.Base(configFilePath), configFilePattern))
+
+	// Assert config file is removed when calling the callback function.
+	assert.NoError(t, callbackFunc())
+	assertFileExists(t, configFilePath, false)
+}
+
+func assertFileExists(t *testing.T, path string, expected bool) {
+	exists, err := fileutils.IsFileExists(path, false)
+	assert.NoError(t, err)
+	assert.Equal(t, expected, exists)
+}
+
+func createNewDotnetModule(t *testing.T, tmpDir string) *build.DotnetModule {
+	dotnetBuild := build.NewBuild("", "", time.Now(), "", tmpDir, nil)
+	module, err := dotnetBuild.AddDotnetModules("")
+	assert.NoError(t, err)
+	return module
 }

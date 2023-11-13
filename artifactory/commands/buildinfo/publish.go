@@ -3,22 +3,23 @@ package buildinfo
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	buildinfo "github.com/jfrog/build-info-go/entities"
-	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
-	"github.com/jfrog/jfrog-client-go/artifactory"
-	clientutils "github.com/jfrog/jfrog-client-go/utils"
-	"github.com/jfrog/jfrog-client-go/utils/log"
-
+	"github.com/jfrog/jfrog-cli-core/v2/artifactory/formats"
 	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
+	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
+	"github.com/jfrog/jfrog-client-go/artifactory"
 	biconf "github.com/jfrog/jfrog-client-go/artifactory/buildinfo"
 	"github.com/jfrog/jfrog-client-go/artifactory/services"
 	artclientutils "github.com/jfrog/jfrog-client-go/artifactory/services/utils"
+	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
+	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 type BuildPublishCommand struct {
@@ -131,8 +132,30 @@ func (bpc *BuildPublishCommand) Run() error {
 	if err != nil {
 		return err
 	}
-	log.Info("Build info successfully deployed. Browse it in Artifactory under " + buildLink)
-	return build.Clean()
+
+	err = build.Clean()
+	if err != nil {
+		return err
+	}
+
+	logMsg := "Build info successfully deployed."
+	if bpc.IsDetailedSummary() {
+		log.Info(logMsg + " Browse it in Artifactory under " + buildLink)
+		return nil
+	}
+
+	log.Info(logMsg)
+	return logJsonOutput(buildLink)
+}
+
+func logJsonOutput(buildInfoUiUrl string) error {
+	output := formats.BuildPublishOutput{BuildInfoUiUrl: buildInfoUiUrl}
+	results, err := output.JSON()
+	if err != nil {
+		return errorutils.CheckError(err)
+	}
+	log.Output(clientutils.IndentJson(results))
+	return nil
 }
 
 func (bpc *BuildPublishCommand) constructBuildInfoUiUrl(servicesManager artifactory.ArtifactoryServicesManager, buildInfoStarted string) (string, error) {
@@ -161,17 +184,27 @@ func (bpc *BuildPublishCommand) getBuildInfoUiUrl(majorVersion int, buildTime ti
 	if err != nil {
 		return "", err
 	}
+
+	baseUrl := bpc.serverDetails.GetUrl()
+	if baseUrl == "" {
+		baseUrl = strings.TrimSuffix(strings.TrimSuffix(bpc.serverDetails.GetArtifactoryUrl(), "/"), "artifactory")
+	}
+	baseUrl = clientutils.AddTrailingSlashIfNeeded(baseUrl)
+
+	project := bpc.buildConfiguration.GetProject()
+	buildName, buildNumber, project = url.PathEscape(buildName), url.PathEscape(buildNumber), url.QueryEscape(project)
+
 	if majorVersion <= 6 {
 		return fmt.Sprintf("%vartifactory/webapp/#/builds/%v/%v",
-			bpc.serverDetails.GetUrl(), buildName, buildNumber), nil
-	} else if bpc.buildConfiguration.GetProject() != "" {
-		timestamp := buildTime.UnixNano() / 1000000
-		return fmt.Sprintf("%vui/builds/%v/%v/%v/published?buildRepo=%v-build-info&projectKey=%v",
-			bpc.serverDetails.GetUrl(), buildName, buildNumber, strconv.FormatInt(timestamp, 10), bpc.buildConfiguration.GetProject(), bpc.buildConfiguration.GetProject()), nil
+			baseUrl, buildName, buildNumber), nil
 	}
-	timestamp := buildTime.UnixNano() / 1000000
+	timestamp := buildTime.UnixMilli()
+	if project != "" {
+		return fmt.Sprintf("%vui/builds/%v/%v/%v/published?buildRepo=%v-build-info&projectKey=%v",
+			baseUrl, buildName, buildNumber, strconv.FormatInt(timestamp, 10), project, project), nil
+	}
 	return fmt.Sprintf("%vui/builds/%v/%v/%v/published?buildRepo=artifactory-build-info",
-		bpc.serverDetails.GetUrl(), buildName, buildNumber, strconv.FormatInt(timestamp, 10)), nil
+		baseUrl, buildName, buildNumber, strconv.FormatInt(timestamp, 10)), nil
 }
 
 // Return the next build number based on the previously published build.
