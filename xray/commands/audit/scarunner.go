@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"os"
 	"time"
 
 	"github.com/jfrog/build-info-go/utils/pythonutils"
 	"github.com/jfrog/gofrog/datastructures"
-	"github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
 	"github.com/jfrog/jfrog-cli-core/v2/xray/commands/audit/sca"
@@ -72,10 +72,10 @@ func runScaScan(params *AuditParams, results *xrayutils.Results) (err error) {
 
 // Calculate the scans to preform
 func getScaScansToPreform(currentWorkingDir string, params *AuditParams) (scansToPreform []*xrayutils.ScaScanResult) {
-	recursive := len(currentWorkingDir) > 0
-	for _, requestedDirectory := range getRequestedDirectoriesToScan(currentWorkingDir, params) {
+	requestedDirectories, isRecursive := getRequestedDirectoriesToScan(currentWorkingDir, params)
+	for _, requestedDirectory := range requestedDirectories {
 		// Detect descriptors and technologies in the requested directory.
-		techToWorkingDirs, err := coreutils.DetectTechnologiesDescriptors(requestedDirectory, recursive, params.Technologies(), getRequestedDescriptors(params), getExcludePattern(params, recursive))
+		techToWorkingDirs, err := coreutils.DetectTechnologiesDescriptors(requestedDirectory, isRecursive, params.Technologies(), getRequestedDescriptors(params), getExcludePattern(params, isRecursive))
 		if err != nil {
 			log.Warn("Couldn't detect technologies in", requestedDirectory, "directory.", err.Error())
 			continue
@@ -116,15 +116,18 @@ func getExcludePattern(params *AuditParams, recursive bool) string {
 	return fspatterns.PrepareExcludePathPattern(exclusions, clientutils.WildCardPattern, recursive)
 }
 
-func getRequestedDirectoriesToScan(currentWorkingDir string, params *AuditParams) []string {
+// Get the directories to scan base on the given parameters.
+// If no working directories were specified, the current working directory will be returned with recursive mode.
+// If working directories were specified, the recursive mode will be false.
+func getRequestedDirectoriesToScan(currentWorkingDir string, params *AuditParams) ([]string, bool) {
 	workingDirs := datastructures.MakeSet[string]()
 	for _, wd := range params.workingDirs {
 		workingDirs.Add(wd)
 	}
-	if workingDirs.Size() == 0 {
-		workingDirs.Add(currentWorkingDir)
+	if len(params.workingDirs) == 0 {
+		return []string{currentWorkingDir}, true
 	}
-	return workingDirs.ToSlice()
+	return workingDirs.ToSlice(), false
 }
 
 // Preform the SCA scan for the given scan information.
@@ -218,7 +221,7 @@ func GetTechDependencyTree(params xrayutils.AuditParams, tech coreutils.Technolo
 	case coreutils.Npm:
 		fullDependencyTrees, uniqueDeps, err = npm.BuildDependencyTree(params)
 	case coreutils.Yarn:
-		fullDependencyTrees, uniqueDeps, err = yarn.BuildDependencyTree()
+		fullDependencyTrees, uniqueDeps, err = yarn.BuildDependencyTree(params)
 	case coreutils.Go:
 		fullDependencyTrees, uniqueDeps, err = _go.BuildDependencyTree(serverDetails, params.DepsRepo())
 	case coreutils.Pipenv, coreutils.Pip, coreutils.Poetry:
@@ -228,7 +231,7 @@ func GetTechDependencyTree(params xrayutils.AuditParams, tech coreutils.Technolo
 			RemotePypiRepo:      params.DepsRepo(),
 			PipRequirementsFile: params.PipRequirementsFile()})
 	case coreutils.Nuget:
-		fullDependencyTrees, uniqueDeps, err = nuget.BuildDependencyTree()
+		fullDependencyTrees, uniqueDeps, err = nuget.BuildDependencyTree(params)
 	default:
 		err = errorutils.CheckErrorf("%s is currently not supported", string(tech))
 	}
@@ -242,7 +245,7 @@ func GetTechDependencyTree(params xrayutils.AuditParams, tech coreutils.Technolo
 
 func createFlatTree(uniqueDeps []string) (*xrayCmdUtils.GraphNode, error) {
 	if log.GetLogger().GetLogLevel() == log.DEBUG {
-		// Avoid printing and marshalling if not on DEBUG mode.
+		// Avoid printing and marshaling if not on DEBUG mode.
 		jsonList, err := json.Marshal(uniqueDeps)
 		if errorutils.CheckError(err) != nil {
 			return nil, err
